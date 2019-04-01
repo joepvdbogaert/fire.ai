@@ -1,0 +1,566 @@
+from __future__ import division
+import warnings
+import copy
+import os
+import pickle
+import time
+
+import numpy as np
+import tensorflow as tf
+import multiprocessing as mp
+import queue
+import gym
+
+from spyro.core import BaseAgent
+from spyro.targets import n_step_forward_view_return, n_step_forward_view_advantage
+from spyro.utils import find_free_numbered_subdir, make_env
+from spyro.builders import (
+    build_mlp_body, add_softmax_layer, add_scalar_regression_layer,
+    build_actor_critic_mlp
+)
+
+
+
+class A3CWorker(mp.Process):
+    """Worker agent for the A3C algorithm. This class is used by the A3CAgent class
+    and not useful to substantiate on its own.
+
+    Parameters
+    ----------
+    env_cls: an openai.gym environment class
+        The environment to train on.
+    global_T: multiprocessing.Value object
+        Global counter of number of performed steps.
+    global_queue: multiprocessing.Queue object
+        The queue to send calculated gradients to.
+    global_weights: multiprocessing.RawArray object
+        The shared-memory array of weights of the global network/agent.
+    weight_shapes: list of tuples
+        The shapes of the trainable tensorflow variables. These are used to reshape weights
+        from `global_weights` to their original form, since they are flattened in the
+        shared-memory array.
+    policy: an implementation of spyro.policies.BasePolicy()
+        The action-selection or exploration-exploitation policy. This must be an initialized
+        object.
+    name: str, optional, default="A3C_Global_Agent"
+        The name of the agent, which is used to define its variable scope in the Tensorflow
+        graph to avoid mix-ups with other tensorflow activities.
+    total_steps: int, optional, default=50,000
+        The total number of steps to train of all workers together.
+    tmax: int, optional, default=32
+        The maximum number of steps for a worker to run before calculating gradients
+        and updating the global model if the episode is not over earlier.
+    beta: float, optional, default=0.05
+        The contribution of entropy to the total loss of the actor. Specifically, the actor's
+        gradient is calculated over :math:`log \\pi_{\\theta}(a_t | s_t)A(a_t, s_t) + \\beta H`
+        where :math:`H` is the entropy.
+    gamma: float, optional, default=0.9
+        The discount factor for future rewards. At time :math:`t`, the reward :math:`r_{t + i}`
+        is discounted by :math:`\\gamma^i` in the return calculation of :math:`t`, for all
+        :math:`i = 1, ..., td_steps`.
+    td_steps: int, optional default=10
+        The number of steps to incorporate explicitly in the return calculation, i.e., the 'n'
+        in the n-step Temporal Difference update.
+    n_layers: int, optional, default=3
+        The number of hidden layers to use in the neural network architecture.
+    n_neurons: int, optional, default=512
+        The number of neurons to use per hidden layer in the neural network.
+    activation: str or tensorflow callable
+        The activation function to use for hidden layers in the neural network.
+    **env_params: key-value pairs
+        Any parameters that should be used to initialize the environment.
+    """
+    def __init__(self, env_cls, global_T, global_queue, global_weights, weight_shapes,
+                 policy, tmax=16, total_steps=1000000, name="A3C_Actor_learner",
+                 beta=0.01, gamma=0.9, td_steps=10, n_layers=2, n_neurons=512, activation="relu",
+                 learning_rate=1e-3, env_params=None, logdir="log", log=True):
+
+        # init Process
+        super().__init__()
+
+        # override name
+        self.name = name
+
+        # create environment and save some info about it
+        self.env_cls = env_cls
+        self.env_params = env_params
+        self.env = make_env(env_cls, env_params)
+        self.observation_space = self.env.observation_space
+        self.action_space = self.env.action_space
+        if hasattr(self.action_space, "spaces"):
+            # action space has subspaces
+            self.multi_action = True
+            self.n_action_spaces = len(self.action_space.spaces)
+            self.n_actions = [s.n for s in self.action_space.spaces]
+            for a in range(self.n_action_spaces):
+                assert not hasattr(self.action_space[a], "spaces"), \
+                    ("A3C only supports one level of nested action spaces.")
+        else:
+            self.multi_action = False
+            self.n_action_spaces = 1
+            self.n_actions = self.action_space.n
+
+        del self.env
+
+        # save the policy
+        self.policy = policy
+
+        # the shared memory objects
+        self.global_T = global_T
+        self.global_queue = global_queue
+        self.global_weights_rawarray = global_weights
+        self.weight_shapes = weight_shapes  # not shared but used to reconstruct weights
+
+        # hyperparameters
+        self.n_layers = n_layers
+        self.n_neurons = n_neurons
+        self.activation = activation
+        self.learning_rate = learning_rate
+        self.beta = beta  # the contribution of entropy to the objective function
+        self.tmax = tmax
+        self.gamma = gamma
+        self.td_steps = td_steps
+        self.total_steps = total_steps
+
+        # small value to prevent log(0)
+        self.tiny_value = 1e-8
+
+        # tensorboard
+        self.logdir = os.path.join(logdir, self.name)
+        self.log = log
+
+    def _init_graph(self):
+        """Build and initialize the Tensorflow computation graph."""
+        self.session = tf.Session()
+
+        with tf.variable_scope(self.name):
+            
+            with tf.variable_scope("shared"):
+                self.state_ph = tf.placeholder(tf.float64, shape=(None,) + self.observation_space.shape, name="state_ph")
+                
+            # Predict action probabilities and state value with model. Note that the function
+            # deals with putting parts of the model in the right variable scope.
+            self.action_probs, self.value_pred = build_actor_critic_mlp(
+                self.state_ph,
+                self.n_actions,
+                scope_shared="shared/",
+                scope_actor="actor",
+                scope_critic="critic",
+                n_layers=self.n_layers,
+                n_neurons=self.n_neurons,
+                activation=self.activation
+            )
+
+            with tf.variable_scope("actor/"):
+                # placeholders for taken action and computed advantage
+                self.action_ph = tf.placeholder(tf.int32, shape=(None, 1), name="action_ph")
+                self.actor_target_ph = tf.placeholder(tf.float64, shape=(None, 1), name="actor_target_ph")  # normally the Advantage
+
+                # compute the entropy of the current policy pi(a|s) for regularization
+                self.entropy = - tf.reduce_sum(self.action_probs * tf.log(self.action_probs + self.tiny_value), axis=1)
+                self.mean_entropy = tf.reduce_mean(self.entropy)
+
+                # compute policy gradients
+                self.action_one_hot = tf.reshape(tf.one_hot(self.action_ph, self.n_actions, dtype=tf.float64), (-1, self.n_actions))    
+                self.taken_action_prob = tf.reduce_sum(self.action_probs * self.action_one_hot, axis=1)
+                self.log_action_prob = tf.log(self.taken_action_prob + self.tiny_value)
+                self.objective = self.log_action_prob * self.actor_target_ph + self.entropy * self.beta
+                self.actor_max_obj = tf.reduce_mean(self.objective)
+                self.actor_loss = - self.actor_max_obj
+                self.actor_optimizer = tf.train.RMSPropOptimizer(learning_rate=self.learning_rate)
+
+            with tf.variable_scope("critic/"):
+                self.critic_target_ph = tf.placeholder(tf.float64, shape=(None, 1), name="critic_target_ph")  # normally the n-step Return G_{t:t+n}
+
+                # compute value gradient
+                self.value_loss = tf.sqrt(tf.reduce_mean(tf.square(self.critic_target_ph - self.value_pred)) + self.tiny_value)  # (root) mean squared error
+                self.value_optimizer = tf.train.RMSPropOptimizer(learning_rate=self.learning_rate)
+
+            # obtain rewards for publishing in Tensorboard
+            self.rewards_ph = tf.placeholder(tf.float64, shape=(None, 1), name="rewards_ph")
+            self.mean_reward = tf.reduce_mean(self.rewards_ph)
+            self.total_reward = tf.reduce_sum(self.rewards_ph)
+
+            # save the trainable variables for easy access
+            self.var_list = tf.trainable_variables(scope=self.name)
+            self.shared_var_list = tf.trainable_variables(scope=self.name + "/shared")
+            self.actor_var_list = self.shared_var_list + tf.trainable_variables(scope=self.name + "/actor")
+            self.critic_var_list = self.shared_var_list + tf.trainable_variables(scope=self.name + "/critic")
+
+            # compute the gradients
+            self.actor_grads_and_vars = self.actor_optimizer.compute_gradients(self.actor_loss, self.actor_var_list)
+            self.critic_grads_and_vars = self.value_optimizer.compute_gradients(self.value_loss, self.critic_var_list)
+
+            # placeholders and operation for setting weights of global model to local one
+            self.set_weights_phs = [tf.placeholder(tf.float64) for _ in self.var_list]
+            self.assign_ops = [tf.assign(var, self.set_weights_phs[i])
+                               for i, var in enumerate(self.var_list)]
+
+        if self.log:
+            total_reward_summary = tf.summary.scalar("total episode reward", self.total_reward)
+            mean_reward_summary = tf.summary.scalar("mean reward per step", self.mean_reward)
+            actor_loss_summary = tf.summary.scalar("actor loss", self.actor_loss)
+            critic_loss_summary = tf.summary.scalar("value loss", self.value_loss)
+            actor_objective_summary = tf.summary.scalar("actor maximize objective", self.actor_max_obj)
+            entropy_summary = tf.summary.scalar("entropy", self.mean_entropy)
+            actor_probs_summary =tf.summary.histogram("policy pi", self.action_probs)
+            self.summary_op = tf.summary.merge(
+                [total_reward_summary, mean_reward_summary, actor_loss_summary,
+                 critic_loss_summary, actor_probs_summary, entropy_summary,
+                 actor_objective_summary]
+            )
+            self.summary_writer = tf.summary.FileWriter(self.logdir, self.session.graph)
+
+        self.session.run(tf.global_variables_initializer())
+
+    def send_gradients(self, gradients):
+        bytes_ = pickle.dumps(gradients, protocol=-1)
+        self.global_queue.put(bytes_)
+
+    def _pull_global_weights(self):
+        if (self.global_weights_rawarray is not None) and (self.weight_shapes is not None):
+            # print("pulling global weights for {}".format(self.name))
+            self.global_weights = [np.frombuffer(w, dtype=np.float64).reshape(self.weight_shapes[i])
+                                   for i, w in enumerate(self.global_weights_rawarray)]
+
+    def set_weights(self, weights):
+        self.session.run(self.assign_ops, feed_dict={ph: w for ph, w in zip(self.set_weights_phs, weights)})
+
+    def obtain_global_weights(self):
+        self._pull_global_weights()
+        self.set_weights(self.global_weights)
+
+    def run(self):
+        """Start training on the environment and sending updates to the global agent."""
+        self._init_graph()
+        self.env = make_env(self.env_cls, self.env_params)
+        self.done = True  # force reset of the environment
+
+        self.local_episode_counter = 0
+        while self.global_T.value < self.total_steps:
+            self.run_session()
+            self.local_episode_counter += 1
+
+    def run_session(self):
+        """Train one session, i.e., one episode or t_max steps."""
+        if self.done:
+            self.state = np.array(self.env.reset(), dtype=np.float64)
+
+        self.obtain_global_weights()
+
+        states = np.zeros((self.tmax,) + self.state.shape, dtype=np.float64)
+        actions = np.zeros(self.tmax, dtype=np.int32)
+        rewards = np.zeros(self.tmax, dtype=np.float64)
+        dones = np.zeros(self.tmax, dtype=np.int32)
+
+        for i in range(self.tmax):
+            # predict policy pi(a|s) and value V(s)
+            action_probabilities = self.session.run(
+                self.action_probs,
+                feed_dict={self.state_ph: np.reshape(self.state, (1, -1))}
+            )
+
+            # select and perform action
+            self.action = self.policy.select_action(action_probabilities)
+            new_state, self.reward, self.done, _ = self.env.step(self.action)
+
+            # save experience
+            states[i] = copy.copy(self.state)
+            actions[i] = self.action
+            rewards[i] = self.reward
+            dones[i] = self.done
+
+            self.state = np.asarray(new_state, dtype=np.float64)
+
+            # stop if episode ends
+            if self.done:
+                states = states[0:(i + 1)]
+                actions = actions[0:(i + 1)]
+                rewards = rewards[0:(i + 1)]
+                dones = dones[0:(i + 1)]
+                break
+
+            with self.global_T.get_lock():
+                self.global_T.value += 1
+
+        # calculate the gradients and send them to the global network
+        gradients = self.collect_gradients(states, actions, rewards, dones)
+        self.send_gradients(gradients)
+
+    def collect_gradients(self, states, actions, rewards, dones):
+        """Collect gradients according to a series of experiences."""
+        # feed the states in the model (again) to obtain a batch of predictions
+        states = np.reshape(states, (-1,) + self.observation_space.shape)
+        action_probas, state_values = self.session.run(
+            [self.action_probs, self.value_pred],
+            feed_dict={self.state_ph: states}
+        )
+
+        # calculate the n-step returns and advantages
+        returns = n_step_forward_view_return(rewards, state_values,
+                                             gamma=self.gamma, n=self.td_steps)
+
+        # reshape for feeding into tensorflow (time dimension is axis 0)
+        returns = returns.reshape((-1, 1))
+        advantages = np.reshape(returns - state_values, (-1, 1))
+        actions = np.reshape(actions, (-1, 1))
+        rewards = np.reshape(rewards, (-1, 1))
+
+        # calculate the gradients for both actor and critic
+        summary, actor_grads_vars, critic_grads_vars = self.session.run(
+            [self.summary_op, self.actor_grads_and_vars, self.critic_grads_and_vars],
+            feed_dict={
+                self.state_ph: states,
+                self.action_ph: actions,
+                self.critic_target_ph: returns,
+                self.actor_target_ph: advantages,
+                self.rewards_ph: rewards
+            }
+        )
+
+        # feed summary data to tensorboard
+        self.summary_writer.add_summary(summary, self.local_episode_counter)
+
+        # keep only the gradient and sum those of actor and critic to obtain a single
+        # gradient per variable
+        actor_grads = [grads for grads, var in actor_grads_vars]
+        critic_grads = [grads for grads, var in critic_grads_vars]
+        gradients = {"actor": actor_grads, "critic": critic_grads}
+        return gradients
+
+
+class A3CAgent(BaseAgent):
+    """Agent that implements the A3C Algorithm.
+
+    Parameters
+    ----------
+    env_cls: an openai.gym environment class
+        The environment to train on.
+    policy: an implementation of spyro.policies.BasePolicy()
+        The action-selection or exploration-exploitation policy. This must be an initialized
+        object.
+    name: str, optional, default="A3C_Global_Agent"
+        The name of the agent, which is used to define its variable scope in the Tensorflow
+        graph to avoid mix-ups with other tensorflow activities.
+    total_steps: int, optional, default=50,000
+        The total number of steps to train of all workers together.
+    tmax: int, optional, default=32
+        The maximum number of steps for a worker to run before calculating gradients
+        and updating the global model if the episode is not over earlier.
+    beta: float, optional, default=0.05
+        The contribution of entropy to the total loss of the actor. Specifically, the actor's
+        gradient is calculated over :math:`log \\pi_{\\theta}(a_t | s_t)A(a_t, s_t) + \\beta H`
+        where :math:`H` is the entropy.
+    gamma: float, optional, default=0.9
+        The discount factor for future rewards. At time :math:`t`, the reward :math:`r_{t + i}`
+        is discounted by :math:`\\gamma^i` in the return calculation of :math:`t`, for all
+        :math:`i = 1, ..., td_steps`.
+    td_steps: int, optional default=10
+        The number of steps to incorporate explicitly in the return calculation, i.e., the 'n'
+        in the n-step Temporal Difference update.
+    learning_rate: float, optional, default=1e-3
+        The learning rate of the RMSProp optimizer.
+    n_layers: int, optional, default=3
+        The number of hidden layers to use in the neural network architecture.
+    n_neurons: int, optional, default=512
+        The number of neurons to use per hidden layer in the neural network.
+    activation: str or tensorflow callable
+        The activation function to use for hidden layers in the neural network.
+    **env_params: key-value pairs
+        Any parameters that should be used to initialize the environment.
+
+    References
+    ---------- 
+    [Mnih et al. (2016)](https://arxiv.org/abs/1602.01783)
+    """
+    def __init__(self, policy, name="A3C_Global_Agent", total_steps=50000, tmax=32, beta=0.05,
+                 gamma=0.9, td_steps=10, learning_rate=1e-3, n_layers=3, n_neurons=512,
+                 activation="relu", logdir="log", log=True, clear_logs=False, gradient_clip=None,
+                 max_queue_size=10):
+
+        self.name = name
+        self.policy = policy
+
+        # logging
+        if clear_logs:
+            raise NotImplementedError("Automatically clearing log files is not implemented yet.")
+
+        self.logdir = find_free_numbered_subdir(logdir, prefix="a3c_run")
+        self.log = log
+        print("Logging in directory: {}".format(self.logdir))
+
+        # model parameters
+        self.model_params = {
+            "n_layers": n_layers,
+            "n_neurons": n_neurons,
+            "activation": activation
+        }
+
+        # algorithm parameters
+        self.beta = beta
+        self.tmax = tmax
+        self.total_steps = total_steps
+        self.gamma = gamma
+        self.td_steps = td_steps
+        self.learning_rate = learning_rate
+        self.gradient_clip = gradient_clip
+
+        # assure global does not lack too far behind by letting workers wait for queue slot
+        self.max_queue_size = max_queue_size
+
+    def _init_graph(self):
+        """Initialize Tensorflow graph."""
+        self.session = tf.Session()
+        with tf.variable_scope(self.name):
+            # build the model
+            self.state_ph = tf.placeholder(tf.float64, shape=(None,) + self.observation_space.shape)
+            self.action_probs, self.value_pred = build_actor_critic_mlp(
+                self.state_ph,
+                self.n_actions,
+                scope_shared="shared",
+                scope_actor="actor",
+                scope_critic="critic",
+                **self.model_params
+            )
+
+            # save lists of trainable variables for easy access
+            self.var_list = tf.trainable_variables(scope=self.name)
+            self.actor_var_list = tf.trainable_variables(scope=self.name + "/shared") + tf.trainable_variables(scope=self.name + "/actor")
+            self.critic_var_list = tf.trainable_variables(scope=self.name + "/shared") + tf.trainable_variables(scope=self.name + "/critic")
+
+            # define optimizers for actor and critic
+            self.optimizer = tf.train.RMSPropOptimizer(learning_rate=self.learning_rate)
+
+            # apply gradients placeholders and operations
+            self.actor_grads_ph = [tf.placeholder(tf.float64) for _ in range(len(self.actor_var_list))]
+            self.critic_grads_ph = [tf.placeholder(tf.float64) for _ in range(len(self.critic_var_list))]
+            self.actor_train_op = self.optimizer.apply_gradients(zip(self.actor_grads_ph, self.actor_var_list))
+            self.critic_train_op = self.optimizer.apply_gradients(zip(self.critic_grads_ph, self.critic_var_list))
+            self.session.run(tf.global_variables_initializer())
+
+    def _obtain_env_information(self, env_cls, env_params):
+        """Obtain necessary information about the environment's state and action spaces."""
+        self.env = make_env(env_cls, env_params)
+        self.observation_space = self.env.observation_space
+        self.action_space = self.env.action_space
+
+        if hasattr(self.action_space, "spaces"):
+            # action space has subspaces
+            self.multi_action = True
+            self.n_action_spaces = len(self.action_space.spaces)
+            self.n_actions = [s.n for s in self.action_space.spaces]
+            for a in range(self.n_action_spaces):
+                assert not hasattr(self.action_space[a], "spaces"), \
+                    ("A3C only supports one level of nested action spaces.")
+        else:
+            self.multi_action = False
+            self.n_action_spaces = 1
+            self.n_actions = self.action_space.n
+
+        del self.env
+
+    def apply_gradients(self, gradients):
+        """Apply the gradients to the global network."""
+        # apply gradient clipping
+        if self.gradient_clip is not None:
+            a_min, a_max = self.gradient_clip
+            gradients["actor"]  = [np.clip(grad, a_min=a_min, a_max=a_max) for grad in gradients["actor"]]
+            gradients["critic"]  = [np.clip(grad, a_min=a_min, a_max=a_max) for grad in gradients["critic"]]
+
+        # apply gradients
+        self.session.run(
+            self.actor_train_op,
+            feed_dict={ph: grad for ph, grad in zip(self.actor_grads_ph, gradients["actor"])}
+        )
+        self.session.run(
+            self.critic_train_op,
+            feed_dict={ph: grad for ph, grad in zip(self.critic_grads_ph, gradients["critic"])}
+        )
+
+    def get_weights(self):
+        return self.session.run(self.var_list)
+
+    def fit(self, env_cls, env_params=None, total_steps=50000, n_workers=-1, verbose=True):
+        """Train the A3C Agent on the environment.
+
+        Parameters
+        ----------
+        env_cls: uninitialized Python class or str
+            The environment to train on. If a class is provided, it must be uninitialized,
+            so that it can be initialized in each worker agent. This is because not all
+            environment are picklable and can therefore not be send to different Python
+            processes. If a string is provided, this string is fed to `gym.make()` to create
+            the environment.
+        env_params: dict, optional, default=None
+            Dictionary of parameter values to pass to `env_cls` upon initialization.
+        total_steps: int, optional, default=50,000
+            The total number of training steps of all workers together.
+        n_workers: int, optional, default=-1
+            The number of worker processes to use. If set to -1, uses all but one of
+            the available cores.
+        """
+        if isinstance(env_params, dict):
+            env_params = env_params
+        elif env_params is None:
+            env_params = {}
+        else:
+            raise ValueError("env_params must be either a dict or None, got {}"
+                             .format(type(env_params)))
+
+        self._obtain_env_information(env_cls, env_params)
+        self._init_graph()
+
+        # determine number of workers
+        if n_workers == -1:
+            n_workers = mp.cpu_count() - 1
+
+        # create multiprocessing communication objects
+        global_queue = mp.Queue(self.max_queue_size)
+        global_T = mp.Value("i", 0)
+        initial_weights = self.get_weights()
+        weight_shapes = [w.shape for w in initial_weights]
+        self.weight_shapes = weight_shapes
+        print("Shapes of trainable weights: {}".format(weight_shapes))
+        shared_weights = [mp.RawArray("d", w.reshape(-1)) for w in initial_weights]
+        numpy_weights = [np.frombuffer(w, dtype=np.float64).reshape(weight_shapes[i])
+                         for i, w in enumerate(shared_weights)]
+
+        # create the worker agents
+        agents = [
+            A3CWorker(env_cls, global_T, global_queue, shared_weights, weight_shapes,
+                      self.policy, tmax=self.tmax, total_steps=total_steps,
+                      name="A3C_Worker_{}".format(i), beta=self.beta,
+                      gamma=self.gamma, td_steps=self.td_steps,
+                      learning_rate=self.learning_rate, logdir=self.logdir,
+                      env_params=env_params, **self.model_params)
+            for i in range(n_workers)
+        ]
+
+        # start training
+        for agent in agents:
+            agent.start()
+
+        # receive and apply gradients while running
+        while True:
+            try:
+                message = global_queue.get(block=True, timeout=3)
+            except queue.Empty:
+                if global_T.value >= total_steps:
+                    break
+            else:
+                if isinstance(message, bytes):
+                    # received gradients, apply them
+                    gradients = pickle.loads(message)
+                    self.apply_gradients(gradients)
+                    new_weights = self.get_weights()
+                    for i in range(len(new_weights)):
+                        np.copyto(numpy_weights[i], new_weights[i])
+                    print("Global steps: {}".format(global_T.value))
+                elif isinstance(message, str):
+                    print(message)
+                else:
+                    print("Queue received unidentified message of type {}"
+                          .format(type(message)))
+
+        for agent in agents:
+            agent.join()
