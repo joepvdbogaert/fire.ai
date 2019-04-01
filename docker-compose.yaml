@@ -1,0 +1,11 @@
+version: '3'
+services:
+  firecommander:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+     - "8888:8888"
+    volumes:
+     - ./work:/home/jovyan/work
+     - ./gym_firecommander:/home/jovyan/gym_firecommander
