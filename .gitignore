@@ -118,5 +118,7 @@ data/
 # simulators
 *.fdsim
 
-# results
-results/
+# results and logs
+work/results/
+work/log/
+archive/
