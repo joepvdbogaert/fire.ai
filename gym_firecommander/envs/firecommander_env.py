@@ -1,6 +1,7 @@
 import os
 import gym
 import pickle
+import copy
 import numpy as np
 
 from itertools import product
@@ -29,7 +30,7 @@ class FireCommanderEnv(gym.Env):
         self.station_names = np.sort([s.name for s in self.sim.stations.values()])
         self.num_stations = len(self.station_names)
         self.num_vehicles = len(self.sim.vehicles)
-        # define action and observation spaces and reward function
+        # define action and observation spaces
         self.observation_space = gym.spaces.MultiDiscrete(np.ones(self.num_stations) * (self.num_vehicles + 1))
         self.action_type = action_type
         if action_type == "num":
@@ -39,6 +40,9 @@ class FireCommanderEnv(gym.Env):
         elif action_type == "tuple":
             self.action_space = gym.spaces.Tuple(
                 (gym.spaces.Discrete(self.num_stations + 1), gym.spaces.Discrete(self.num_stations)))
+        elif action_type == "multi":
+            self.action_space = gym.spaces.MultiDiscrete([self.num_stations + 1, self.num_stations])
+        # and reward function
         self._assign_reward_function(reward_func)
         # define worst possible response time
         self.worst_response = worst_response
@@ -201,9 +205,9 @@ class FireCommanderEnv(gym.Env):
     def _simulate(self):
         """ Simulate a single incident and all corresponding deployments"""
         # sample incident and update status of vehicles at new time t
-        self.sim.t, time, type_, loc, prio, req_vehicles, func, dest = self.sim._sample_incident()
+        self.sim.t, self.time, type_, loc, prio, req_vehicles, func, dest = self.sim._sample_incident()
 
-        self.sim._update_vehicles(self.sim.t, time)
+        self.sim._update_vehicles(self.sim.t, self.time)
 
         # sample dispatch time
         dispatch = self.sim.rsampler.sample_dispatch_time(type_)
@@ -240,3 +244,37 @@ class FireCommanderEnv(gym.Env):
                     min_ts_response = response
 
         return min_ts_response, target
+
+    def get_snapshot(self):
+        """Retrieve data from the environment in order to return to its current state
+        later. Does not include random states, so simulated output will change upon return.
+        """
+        data = {
+            "t": self.sim.t,
+            "time": self.time,
+            "vehicles": self.sim.vehicles,
+            "stations": self.sim.stations,
+            "state": self.state,
+            "reward": self.reward,
+            "last_action": self.last_action,
+            "done": self.is_done}
+        return copy.deepcopy(data)
+
+    def set_snapshot(self, data):
+        """Set the environment back to an earlier retrieved snapshot.
+
+        Parameters
+        ----------
+        data: dict
+            Output of `FireCommanderEnv.get_snapshot()`.
+        """
+        self.sim.t = data["t"]
+        self.time = data["time"]
+        self.sim.vehicles = data["vehicles"]
+        self.sim.stations = data["stations"]
+        self.state = data["state"]
+        self.reward = data["reward"]
+        self.last_action = data["last_action"]
+        self.is_done = data["done"]
+        self.sim._add_base_stations_to_vehicles()
+        self.sim.set_max_target(self.sim.max_target)
