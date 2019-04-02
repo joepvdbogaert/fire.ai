@@ -22,6 +22,34 @@ class BasePolicy(object):
         """Return the policy configuration as a dictionary."""
 
 
+class FixedActionPolicy(BasePolicy):
+    """Policy that always takes the same action. Useful for planning or obtaining baseline
+    value estimates for states.
+
+    Parameters
+    ----------
+    action: any
+        The action to return on every call to `self.select_action()`.
+    """
+    name = "FixedActionPolicy"
+
+    def __init__(self, action):
+        self.action = action
+
+    def select_action(self, *args, **kwargs):
+        """Return the fixed action.
+
+        Returns
+        -------
+        action: any
+            The action that was specified upon initialization.
+        """
+        return self.action
+
+    def get_config(self):
+        return {"action": self.action}
+
+
 class SoftmaxPolicy(BasePolicy):
     """Policy that selects actions based on their probabilities.
 
