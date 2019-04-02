@@ -13,7 +13,7 @@ import gym
 
 from spyro.core import BaseAgent
 from spyro.targets import n_step_forward_view_return, n_step_forward_view_advantage
-from spyro.utils import find_free_numbered_subdir, make_env
+from spyro.utils import find_free_numbered_subdir, make_env, obtain_env_information
 from spyro.builders import (
     build_mlp_body, add_softmax_layer, add_scalar_regression_layer,
     build_actor_critic_mlp
@@ -86,20 +86,8 @@ class A3CWorker(mp.Process):
         self.env = make_env(env_cls, env_params)
         self.observation_space = self.env.observation_space
         self.action_space = self.env.action_space
-        if hasattr(self.action_space, "spaces"):
-            # action space has subspaces
-            self.multi_action = True
-            self.n_action_spaces = len(self.action_space.spaces)
-            self.n_actions = [s.n for s in self.action_space.spaces]
-            for a in range(self.n_action_spaces):
-                assert not hasattr(self.action_space[a], "spaces"), \
-                    ("A3C only supports one level of nested action spaces.")
-        else:
-            self.multi_action = False
-            self.n_action_spaces = 1
-            self.n_actions = self.action_space.n
-
-        del self.env
+        self.action_shape, self.n_actions, self.obs_shape, _  = \
+                obtain_env_information(env_cls, env_params)
 
         # save the policy
         self.policy = policy
@@ -166,15 +154,19 @@ class A3CWorker(mp.Process):
                 self.objective = self.log_action_prob * self.actor_target_ph + self.entropy * self.beta
                 self.actor_max_obj = tf.reduce_mean(self.objective)
                 self.actor_loss = - self.actor_max_obj
-                self.actor_optimizer = tf.train.RMSPropOptimizer(learning_rate=self.learning_rate)
+                # self.actor_optimizer = tf.train.RMSPropOptimizer(learning_rate=self.learning_rate)
 
             with tf.variable_scope("critic/"):
                 self.critic_target_ph = tf.placeholder(tf.float64, shape=(None, 1), name="critic_target_ph")  # normally the n-step Return G_{t:t+n}
 
                 # compute value gradient
                 self.value_loss = tf.reduce_mean(tf.square(self.critic_target_ph - self.value_pred))  # (root) mean squared error
-                self.value_optimizer = tf.train.RMSPropOptimizer(learning_rate=self.learning_rate)
+                # self.value_optimizer = tf.train.RMSPropOptimizer(learning_rate=self.learning_rate)
 
+            # total loss
+            self.total_loss = self.actor_loss + 0.5 * self.value_loss
+            self.optimizer = tf.train.RMSPropOptimizer(learning_rate=self.learning_rate)
+            
             # obtain rewards for publishing in Tensorboard
             self.rewards_ph = tf.placeholder(tf.float64, shape=(None, 1), name="rewards_ph")
             self.mean_reward = tf.reduce_mean(self.rewards_ph)
@@ -187,8 +179,9 @@ class A3CWorker(mp.Process):
             self.critic_var_list = self.shared_var_list + tf.trainable_variables(scope=self.name + "/critic")
 
             # compute the gradients
-            self.actor_grads_and_vars = self.actor_optimizer.compute_gradients(self.actor_loss, self.actor_var_list)
-            self.critic_grads_and_vars = self.value_optimizer.compute_gradients(self.value_loss, self.critic_var_list)
+            # self.actor_grads_and_vars = self.actor_optimizer.compute_gradients(self.actor_loss, self.actor_var_list)
+            # self.critic_grads_and_vars = self.value_optimizer.compute_gradients(self.value_loss, self.critic_var_list)
+            self.grads_and_vars = self.optimizer.compute_gradients(self.total_loss, self.var_list)
 
             # placeholders and operation for setting weights of global model to local one
             self.set_weights_phs = [tf.placeholder(tf.float64) for _ in self.var_list]
@@ -200,13 +193,14 @@ class A3CWorker(mp.Process):
             mean_reward_summary = tf.summary.scalar("mean_reward_per_step", self.mean_reward)
             actor_loss_summary = tf.summary.scalar("actor_loss", self.actor_loss)
             critic_loss_summary = tf.summary.scalar("value_loss", self.value_loss)
+            total_loss_summary = tf.summary.scalar("total_loss", self.total_loss)
             actor_objective_summary = tf.summary.scalar("actor_maximize_objective", self.actor_max_obj)
             entropy_summary = tf.summary.scalar("entropy", self.mean_entropy)
             actor_probs_summary =tf.summary.histogram("policy_pi", self.action_probs)
             self.summary_op = tf.summary.merge(
                 [total_reward_summary, mean_reward_summary, actor_loss_summary,
                  critic_loss_summary, actor_probs_summary, entropy_summary,
-                 actor_objective_summary]
+                 actor_objective_summary, total_loss_summary]
             )
             self.summary_writer = tf.summary.FileWriter(self.logdir, self.session.graph)
 
@@ -306,8 +300,18 @@ class A3CWorker(mp.Process):
         rewards = np.reshape(rewards, (-1, 1))
 
         # calculate the gradients for both actor and critic
-        summary, actor_grads_vars, critic_grads_vars = self.session.run(
-            [self.summary_op, self.actor_grads_and_vars, self.critic_grads_and_vars],
+        # summary, actor_grads_vars, critic_grads_vars = self.session.run(
+        #     [self.summary_op, self.actor_grads_and_vars, self.critic_grads_and_vars],
+        #     feed_dict={
+        #         self.state_ph: states,
+        #         self.action_ph: actions,
+        #         self.critic_target_ph: returns,
+        #         self.actor_target_ph: advantages,
+        #         self.rewards_ph: rewards
+        #     }
+        # )
+        summary, grads_vars = self.session.run(
+            [self.summary_op, self.grads_and_vars],
             feed_dict={
                 self.state_ph: states,
                 self.action_ph: actions,
@@ -322,9 +326,10 @@ class A3CWorker(mp.Process):
 
         # keep only the gradient and sum those of actor and critic to obtain a single
         # gradient per variable
-        actor_grads = [grads for grads, var in actor_grads_vars]
-        critic_grads = [grads for grads, var in critic_grads_vars]
-        gradients = {"actor": actor_grads, "critic": critic_grads}
+        #         actor_grads = [grads for grads, var in actor_grads_vars]
+        #         critic_grads = [grads for grads, var in critic_grads_vars]
+        #         gradients = {"actor": actor_grads, "critic": critic_grads}
+        gradients = [grads for grads, var in grads_vars]
         return gradients
 
 
@@ -412,7 +417,7 @@ class A3CAgent(BaseAgent):
         self.session = tf.Session()
         with tf.variable_scope(self.name):
             # build the model
-            self.state_ph = tf.placeholder(tf.float64, shape=(None,) + self.observation_space.shape)
+            self.state_ph = tf.placeholder(tf.float64, shape=(None,) + self.obs_shape)
             self.action_probs, self.value_pred = build_actor_critic_mlp(
                 self.state_ph,
                 self.n_actions,
@@ -431,50 +436,43 @@ class A3CAgent(BaseAgent):
             self.optimizer = tf.train.RMSPropOptimizer(learning_rate=self.learning_rate)
 
             # apply gradients placeholders and operations
-            self.actor_grads_ph = [tf.placeholder(tf.float64) for _ in range(len(self.actor_var_list))]
-            self.critic_grads_ph = [tf.placeholder(tf.float64) for _ in range(len(self.critic_var_list))]
-            self.actor_train_op = self.optimizer.apply_gradients(zip(self.actor_grads_ph, self.actor_var_list))
-            self.critic_train_op = self.optimizer.apply_gradients(zip(self.critic_grads_ph, self.critic_var_list))
+#             self.actor_grads_ph = [tf.placeholder(tf.float64) for _ in range(len(self.actor_var_list))]
+#             self.critic_grads_ph = [tf.placeholder(tf.float64) for _ in range(len(self.critic_var_list))]
+#             self.actor_train_op = self.optimizer.apply_gradients(zip(self.actor_grads_ph, self.actor_var_list))
+#             self.critic_train_op = self.optimizer.apply_gradients(zip(self.critic_grads_ph, self.critic_var_list))
+            self.grads_ph = [tf.placeholder(tf.float64) for _ in range(len(self.var_list))]
+            self.train_op = self.optimizer.apply_gradients(zip(self.grads_ph, self.var_list))
             self.session.run(tf.global_variables_initializer())
-
-    def _obtain_env_information(self, env_cls, env_params):
-        """Obtain necessary information about the environment's state and action spaces."""
-        self.env = make_env(env_cls, env_params)
-        self.observation_space = self.env.observation_space
-        self.action_space = self.env.action_space
-
-        if hasattr(self.action_space, "spaces"):
-            # action space has subspaces
-            self.multi_action = True
-            self.n_action_spaces = len(self.action_space.spaces)
-            self.n_actions = [s.n for s in self.action_space.spaces]
-            for a in range(self.n_action_spaces):
-                assert not hasattr(self.action_space[a], "spaces"), \
-                    ("A3C only supports one level of nested action spaces.")
-        else:
-            self.multi_action = False
-            self.n_action_spaces = 1
-            self.n_actions = self.action_space.n
-
-        del self.env
 
     def apply_gradients(self, gradients):
         """Apply the gradients to the global network."""
-        # apply gradient clipping
-        if self.gradient_clip is not None:
-            a_min, a_max = self.gradient_clip
-            gradients["actor"]  = [np.clip(grad, a_min=a_min, a_max=a_max) for grad in gradients["actor"]]
-            gradients["critic"]  = [np.clip(grad, a_min=a_min, a_max=a_max) for grad in gradients["critic"]]
+        if isinstance(gradients, list):
+            if self.gradient_clip is not None:
+                a_min, a_max = self.gradient_clip
+                gradients = [np.clip(grad, a_min=a_min, a_max=a_max) for grad in gradients]
+            self.session.run(
+                self.train_op,
+                feed_dict={ph: grad for ph, grad in zip(self.grads_ph, gradients)}
+            )
 
-        # apply gradients
-        self.session.run(
-            self.actor_train_op,
-            feed_dict={ph: grad for ph, grad in zip(self.actor_grads_ph, gradients["actor"])}
-        )
-        self.session.run(
-            self.critic_train_op,
-            feed_dict={ph: grad for ph, grad in zip(self.critic_grads_ph, gradients["critic"])}
-        )
+        elif isinstance(gradients, dict):            
+            if self.gradient_clip is not None:
+                a_min, a_max = self.gradient_clip
+                gradients["actor"]  = [np.clip(grad, a_min=a_min, a_max=a_max) for grad in gradients["actor"]]
+                gradients["critic"]  = [np.clip(grad, a_min=a_min, a_max=a_max) for grad in gradients["critic"]]
+
+            # apply gradients
+            self.session.run(
+                self.actor_train_op,
+                feed_dict={ph: grad for ph, grad in zip(self.actor_grads_ph, gradients["actor"])}
+            )
+            self.session.run(
+                self.critic_train_op,
+                feed_dict={ph: grad for ph, grad in zip(self.critic_grads_ph, gradients["critic"])}
+            )
+
+        else:
+            raise ValueError("Received neither a list nor a dictionary of lists as gradients.")
 
     def get_weights(self):
         return self.session.run(self.var_list)
@@ -506,12 +504,15 @@ class A3CAgent(BaseAgent):
             raise ValueError("env_params must be either a dict or None, got {}"
                              .format(type(env_params)))
 
-        self._obtain_env_information(env_cls, env_params)
+        # obtain action and observation space information
+        self.action_shape, self.n_actions, self.obs_shape, _  = \
+                obtain_env_information(env_cls, env_params)
         self._init_graph()
 
         # determine number of workers
         if n_workers == -1:
             n_workers = mp.cpu_count() - 1
+            print("CPU count: {}".format(mp.cpu_count()))
 
         # create multiprocessing communication objects
         global_queue = mp.Queue(self.max_queue_size)
