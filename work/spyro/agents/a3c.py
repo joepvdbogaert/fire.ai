@@ -20,7 +20,6 @@ from spyro.builders import (
 )
 
 
-
 class A3CWorker(mp.Process):
     """Worker agent for the A3C algorithm. This class is used by the A3CAgent class
     and not useful to substantiate on its own.
@@ -173,7 +172,7 @@ class A3CWorker(mp.Process):
                 self.critic_target_ph = tf.placeholder(tf.float64, shape=(None, 1), name="critic_target_ph")  # normally the n-step Return G_{t:t+n}
 
                 # compute value gradient
-                self.value_loss = tf.sqrt(tf.reduce_mean(tf.square(self.critic_target_ph - self.value_pred)) + self.tiny_value)  # (root) mean squared error
+                self.value_loss = tf.reduce_mean(tf.square(self.critic_target_ph - self.value_pred))  # (root) mean squared error
                 self.value_optimizer = tf.train.RMSPropOptimizer(learning_rate=self.learning_rate)
 
             # obtain rewards for publishing in Tensorboard
@@ -197,13 +196,13 @@ class A3CWorker(mp.Process):
                                for i, var in enumerate(self.var_list)]
 
         if self.log:
-            total_reward_summary = tf.summary.scalar("total episode reward", self.total_reward)
-            mean_reward_summary = tf.summary.scalar("mean reward per step", self.mean_reward)
-            actor_loss_summary = tf.summary.scalar("actor loss", self.actor_loss)
-            critic_loss_summary = tf.summary.scalar("value loss", self.value_loss)
-            actor_objective_summary = tf.summary.scalar("actor maximize objective", self.actor_max_obj)
+            total_reward_summary = tf.summary.scalar("total_episode_reward", self.total_reward)
+            mean_reward_summary = tf.summary.scalar("mean_reward_per_step", self.mean_reward)
+            actor_loss_summary = tf.summary.scalar("actor_loss", self.actor_loss)
+            critic_loss_summary = tf.summary.scalar("value_loss", self.value_loss)
+            actor_objective_summary = tf.summary.scalar("actor_maximize_objective", self.actor_max_obj)
             entropy_summary = tf.summary.scalar("entropy", self.mean_entropy)
-            actor_probs_summary =tf.summary.histogram("policy pi", self.action_probs)
+            actor_probs_summary =tf.summary.histogram("policy_pi", self.action_probs)
             self.summary_op = tf.summary.merge(
                 [total_reward_summary, mean_reward_summary, actor_loss_summary,
                  critic_loss_summary, actor_probs_summary, entropy_summary,
@@ -428,7 +427,7 @@ class A3CAgent(BaseAgent):
             self.actor_var_list = tf.trainable_variables(scope=self.name + "/shared") + tf.trainable_variables(scope=self.name + "/actor")
             self.critic_var_list = tf.trainable_variables(scope=self.name + "/shared") + tf.trainable_variables(scope=self.name + "/critic")
 
-            # define optimizers for actor and critic
+            # define optimizer
             self.optimizer = tf.train.RMSPropOptimizer(learning_rate=self.learning_rate)
 
             # apply gradients placeholders and operations
@@ -540,27 +539,30 @@ class A3CAgent(BaseAgent):
         for agent in agents:
             agent.start()
 
-        # receive and apply gradients while running
-        while True:
-            try:
-                message = global_queue.get(block=True, timeout=3)
-            except queue.Empty:
-                if global_T.value >= total_steps:
-                    break
-            else:
-                if isinstance(message, bytes):
-                    # received gradients, apply them
-                    gradients = pickle.loads(message)
-                    self.apply_gradients(gradients)
-                    new_weights = self.get_weights()
-                    for i in range(len(new_weights)):
-                        np.copyto(numpy_weights[i], new_weights[i])
-                    print("Global steps: {}".format(global_T.value))
-                elif isinstance(message, str):
-                    print(message)
+        try:
+            # receive and apply gradients while running
+            while True:
+                try:
+                    message = global_queue.get(block=True, timeout=3)
+                except queue.Empty:
+                    if global_T.value >= total_steps:
+                        break
                 else:
-                    print("Queue received unidentified message of type {}"
-                          .format(type(message)))
+                    if isinstance(message, bytes):
+                        # received gradients, apply them
+                        gradients = pickle.loads(message)
+                        self.apply_gradients(gradients)
+                        new_weights = self.get_weights()
+                        for i in range(len(new_weights)):
+                            np.copyto(numpy_weights[i], new_weights[i])
+                        print("Global steps: {}".format(global_T.value))
+                    elif isinstance(message, str):
+                        print(message)
+                    else:
+                        print("Queue received unidentified message of type {}"
+                              .format(type(message)))
+        except KeyboardInterrupt:
+            global_T = total_steps  # make workers think we are done
 
         for agent in agents:
             agent.join()
