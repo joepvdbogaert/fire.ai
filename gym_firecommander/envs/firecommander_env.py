@@ -248,6 +248,12 @@ class FireCommanderEnv(gym.Env):
     def get_snapshot(self):
         """Retrieve data from the environment in order to return to its current state
         later. Does not include random states, so simulated output will change upon return.
+
+        Returns
+        -------
+        data: dict
+            Various parameters describing the current state of the system. Can be used as
+            input for `FireCommanderEnv.set_snapshot()` to return to this state.
         """
         data = {
             "t": self.sim.t,
