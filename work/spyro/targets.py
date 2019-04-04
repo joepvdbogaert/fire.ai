@@ -2,12 +2,12 @@ from __future__ import division
 import numpy as np
 
 
-def n_step_forward_view_advantage(rewards, state_values, gamma=0.90, n=10):
+def n_step_advantage(rewards, state_values, gamma=0.90, n=10):
     """Compute the n-step forward view advantages of a series of experiences.
 
-    This function calculates the n-step forward view return and subtracts the
+    This function calculates the n-step forward view temporal difference and subtracts the
     estimate of the state value as a baseline to obtain the advantage. See
-    `n_step_forward_view_return` for details on the n-step return.
+    :code:`n_step_temporal_difference` for details on the n-step return.
 
     Parameters
     ----------
@@ -34,8 +34,8 @@ def n_step_forward_view_advantage(rewards, state_values, gamma=0.90, n=10):
     returns = n_step_forward_view_return(rewards, state_values, gamma=gamma, n=n)
     return returns - np.asarray(state_values)
 
-def n_step_forward_view_return(rewards, state_values, gamma=0.9, n=10):
-    """Compute the n-step forward view return of a series of experiences.
+def n_step_temporal_difference(rewards, state_values, gamma=0.9, n=10):
+    """Compute the n-step forward view temporal difference of a series of experiences.
 
     The n-step return at time step :math:`t` is the sum of discounted rewards of steps
     :math:`t:t + n`, plus the estimated value of the resulting state :math:`V(s_{t + n})`.
