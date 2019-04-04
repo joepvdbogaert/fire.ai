@@ -15,10 +15,10 @@ def build_actor_critic_mlp(inputs, n_actions, n_layers=3, n_neurons=512, activat
                                  activation=activation)
 
     with tf.variable_scope(scope_actor):
-        action_probas = add_softmax_layer(network, n_actions)
+        action_probas = tf.layers.dense(inputs, n_actions, activation=tf.nn.softmax)
 
     with tf.variable_scope(scope_critic):
-        value_prediction = add_scalar_regression_layer(network, activation="linear")
+        value_prediction = tf.layers.dense(inputs, 1, activation="linear")
 
     return action_probas, value_prediction
 
@@ -30,12 +30,32 @@ def build_mlp_body(inputs, n_layers=3, n_neurons=512, activation="relu", **kwarg
         network = tf.layers.dense(network, n_neurons, activation=activation, **kwargs)
     return network
 
-def add_softmax_layer(inputs, softmax_dim):
-    """Add a Softmax output layer to an existing network."""
-    output = tf.layers.dense(inputs, softmax_dim, activation=tf.nn.softmax)
+
+def build_mlp_regressor(inputs, n_layers, n_neurons, activation="relu", output_dim=1, **kwargs):
+    network = build_mlp_body(inputs, n_layers=n_layers, n_neurons=n_neurons,
+                             activation=activation, **kwargs)
+    output = tf.layers.dense(inputs, output_dim, activation="linear")
     return output
 
 
-def add_scalar_regression_layer(inputs, activation="linear"):
-    output = tf.layers.dense(inputs, 1, activation=activation)
-    return output
+def build_dqn(inputs, n_actions, n_layers, n_neurons, activation="relu", dueling=True,
+                   value_neurons=64, advantage_neurons=256, **kwargs):
+    """Create a (Dueling) Deep Q-Network. Inputs should normally be the states and outputs
+    are the predicted values of each action from these states.
+    """
+    network = build_mlp_body(inputs, n_layers=n_layers, n_neurons=n_neurons,
+                             activation=activation, **kwargs)
+    if dueling:
+        # value stream
+        value_layer = tf.layers.dense(network, value_neurons, activation="relu")
+        value = tf.layers.dense(value_layer, 1, activation="linear")
+        # advantage stream
+        advantage_layer = tf.layers.dense(network, advantage_neurons, activation="relu")
+        advantage = tf.layers.dense(advantage_layer, n_actions, activation="linear")
+        # combine
+        qvalues = value - tf.subtract(advantage, tf.reduce_mean(advantage))
+
+    else:
+        qvalues = tf.dense(network, n_actions, activation="linear")
+
+    return qvalues
