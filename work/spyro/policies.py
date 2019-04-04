@@ -50,6 +50,22 @@ class FixedActionPolicy(BasePolicy):
         return {"action": self.action}
 
 
+class RandomPolicy(BasePolicy):
+    """Policy that takes random uniform actions no matter its input."""
+    name = "RandomPolicy"
+
+    def __init__(self, n_actions):
+        super().__init__()
+        self.n_actions = n_actions
+
+    def select_action(self, *args, **kwargs):
+        """Randomly select one of n_actions."""
+        return np.random.randint(0, len(values))
+
+    def get_config(self):
+        return {"n_actions": self.n_actions}
+
+
 class SoftmaxPolicy(BasePolicy):
     """Policy that selects actions based on their probabilities.
 
