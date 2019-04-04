@@ -12,12 +12,9 @@ import queue
 import gym
 
 from spyro.core import BaseAgent
-from spyro.targets import n_step_forward_view_return, n_step_forward_view_advantage
+from spyro.targets import n_step_temporal_difference
 from spyro.utils import find_free_numbered_subdir, make_env, obtain_env_information
-from spyro.builders import (
-    build_mlp_body, add_softmax_layer, add_scalar_regression_layer,
-    build_actor_critic_mlp
-)
+from spyro.builders import build_actor_critic_mlp
 
 
 class A3CWorker(mp.Process):
@@ -83,11 +80,9 @@ class A3CWorker(mp.Process):
         # create environment and save some info about it
         self.env_cls = env_cls
         self.env_params = env_params
-        self.env = make_env(env_cls, env_params)
-        self.observation_space = self.env.observation_space
-        self.action_space = self.env.action_space
-        self.action_shape, self.n_actions, self.obs_shape, _  = \
-                obtain_env_information(env_cls, env_params)
+        # self.env = make_env(env_cls, env_params)
+        # self.observation_space = self.env.observation_space
+        # self.action_space = self.env.action_space
 
         # save the policy
         self.policy = policy
@@ -123,7 +118,7 @@ class A3CWorker(mp.Process):
         with tf.variable_scope(self.name):
             
             with tf.variable_scope("shared"):
-                self.state_ph = tf.placeholder(tf.float64, shape=(None,) + self.observation_space.shape, name="state_ph")
+                self.state_ph = tf.placeholder(tf.float64, shape=(None,) + self.obs_shape, name="state_ph")
                 
             # Predict action probabilities and state value with model. Note that the function
             # deals with putting parts of the model in the right variable scope.
@@ -225,6 +220,8 @@ class A3CWorker(mp.Process):
 
     def run(self):
         """Start training on the environment and sending updates to the global agent."""
+        self.action_shape, self.n_actions, self.obs_shape, _  = \
+                obtain_env_information(self.env_cls, self.env_params)
         self._init_graph()
         self.env = make_env(self.env_cls, self.env_params)
         self.done = True  # force reset of the environment
@@ -283,14 +280,14 @@ class A3CWorker(mp.Process):
     def collect_gradients(self, states, actions, rewards, dones):
         """Collect gradients according to a series of experiences."""
         # feed the states in the model (again) to obtain a batch of predictions
-        states = np.reshape(states, (-1,) + self.observation_space.shape)
+        states = np.reshape(states, (-1,) + self.obs_shape)
         action_probas, state_values = self.session.run(
             [self.action_probs, self.value_pred],
             feed_dict={self.state_ph: states}
         )
 
         # calculate the n-step returns and advantages
-        returns = n_step_forward_view_return(rewards, state_values,
+        returns = n_step_temporal_difference(rewards, state_values,
                                              gamma=self.gamma, n=self.td_steps)
 
         # reshape for feeding into tensorflow (time dimension is axis 0)
@@ -377,21 +374,11 @@ class A3CAgent(BaseAgent):
     ---------- 
     [Mnih et al. (2016)](https://arxiv.org/abs/1602.01783)
     """
-    def __init__(self, policy, name="A3C_Global_Agent", total_steps=50000, tmax=32, beta=0.05,
-                 gamma=0.9, td_steps=10, learning_rate=1e-3, n_layers=3, n_neurons=512,
-                 activation="relu", logdir="log", log=True, clear_logs=False, gradient_clip=None,
-                 max_queue_size=10):
+    def __init__(self, policy, name="A3C_Global_Agent", beta=0.05, td_steps=10,
+                 n_layers=3, n_neurons=512, activation="relu", max_queue_size=10,
+                 *args, **kwargs):
 
         self.name = name
-        self.policy = policy
-
-        # logging
-        if clear_logs:
-            raise NotImplementedError("Automatically clearing log files is not implemented yet.")
-
-        self.logdir = find_free_numbered_subdir(logdir, prefix="a3c_run")
-        self.log = log
-        print("Logging in directory: {}".format(self.logdir))
 
         # model parameters
         self.model_params = {
@@ -400,17 +387,15 @@ class A3CAgent(BaseAgent):
             "activation": activation
         }
 
-        # algorithm parameters
+        # algorithm-specific parameters (the rest is passed to BaseAgent)
         self.beta = beta
-        self.tmax = tmax
-        self.total_steps = total_steps
-        self.gamma = gamma
         self.td_steps = td_steps
-        self.learning_rate = learning_rate
-        self.gradient_clip = gradient_clip
 
         # assure global does not lack too far behind by letting workers wait for queue slot
         self.max_queue_size = max_queue_size
+
+        # process rest of input
+        super().__init__(policy, *args, **kwargs)
 
     def _init_graph(self):
         """Initialize Tensorflow graph."""
@@ -477,7 +462,7 @@ class A3CAgent(BaseAgent):
     def get_weights(self):
         return self.session.run(self.var_list)
 
-    def fit(self, env_cls, env_params=None, total_steps=50000, n_workers=-1, verbose=True):
+    def fit(self, env_cls, env_params=None, tmax=32, total_steps=50000, n_workers=-1, verbose=True):
         """Train the A3C Agent on the environment.
 
         Parameters
@@ -504,6 +489,8 @@ class A3CAgent(BaseAgent):
             raise ValueError("env_params must be either a dict or None, got {}"
                              .format(type(env_params)))
 
+        self.tmax = tmax
+        self.total_steps = total_steps
         # obtain action and observation space information
         self.action_shape, self.n_actions, self.obs_shape, _  = \
                 obtain_env_information(env_cls, env_params)
