@@ -38,8 +38,8 @@ def build_mlp_regressor(inputs, n_layers, n_neurons, activation="relu", output_d
     return output
 
 
-def build_dqn(inputs, n_actions, n_layers, n_neurons, activation="relu", dueling=True,
-                   value_neurons=64, advantage_neurons=256, **kwargs):
+def build_dqn(inputs, n_actions, n_layers=2, n_neurons=512, activation="relu", dueling=True,
+              value_neurons=64, advantage_neurons=256, **kwargs):
     """Create a (Dueling) Deep Q-Network. Inputs should normally be the states and outputs
     are the predicted values of each action from these states.
     """
@@ -47,15 +47,15 @@ def build_dqn(inputs, n_actions, n_layers, n_neurons, activation="relu", dueling
                              activation=activation, **kwargs)
     if dueling:
         # value stream
-        value_layer = tf.layers.dense(network, value_neurons, activation="relu")
-        value = tf.layers.dense(value_layer, 1, activation="linear")
+        value_layer = tf.layers.dense(network, value_neurons, activation="relu", name="value_layer")
+        value = tf.layers.dense(value_layer, 1, activation="linear", name="state_value")
         # advantage stream
-        advantage_layer = tf.layers.dense(network, advantage_neurons, activation="relu")
-        advantage = tf.layers.dense(advantage_layer, n_actions, activation="linear")
+        advantage_layer = tf.layers.dense(network, advantage_neurons, activation="relu", name="advantage_layer")
+        advantage = tf.layers.dense(advantage_layer, n_actions, activation="linear", name="advantage")
         # combine
-        qvalues = value - tf.subtract(advantage, tf.reduce_mean(advantage))
+        qvalues = value - tf.subtract(advantage, tf.reduce_mean(advantage)  )
 
     else:
-        qvalues = tf.dense(network, n_actions, activation="linear")
+        qvalues = tf.layers.dense(network, n_actions, activation="linear")
 
     return qvalues
