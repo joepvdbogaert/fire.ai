@@ -159,19 +159,26 @@ class EpsilonGreedyPolicy(BasePolicy):
         or `decay_step`.
     """
 
-    def __init__(self, epsilon, decay_factor=None, decay_step=None, steps_between_decay=5000):
-        self.start_eps = start_eps
-        self.eps = epsilon
-        self.decay_factor = decay_factor
-        self.decay_step = decay_step
-        assert (decay_step is not None) + (decay_factor is not None) < 2, \
-            ("Provide at most one of `decay_factor` and `abs_decay`.")
+    def __init__(self, start_epsilon, final_epsilon=0.0, steps_to_final_eps=1e6, decay=None):
+        self.start_eps = start_epsilon
+        self.eps = start_epsilon
+        self.final_eps = final_epsilon
+        self.decay = decay
+        self.steps_to_final_eps = steps_to_final_eps
 
-        self.steps_between_decay = steps_between_decay
-        self.counter = 0
+        if decay is None:
+            self.decay_step = 0.0
+
+        elif decay == "linear":
+            assert start_epsilon > final_epsilon, "Start value of epsilon must be higher than final"
+            self.decay_step = (start_epsilon - final_epsilon) / steps_to_final_eps
+
+        else:
+            raise ValueError("decay must be one of [None, 'linear']")
 
     def select_action(self, values):
-        """Select the action with the highest score.
+        """Select the action with the highest score with probability :math:`(1 - \\epsilon)`
+        and a random action with probability :math:`\\epsilon`.
 
         Parameters
         ----------
@@ -183,25 +190,21 @@ class EpsilonGreedyPolicy(BasePolicy):
         action: int:
             The action with the highest score.
         """
-        self.counter += 1
-        if self.counter % self.steps_between_decay == 0:
-            if self.decay_factor is not None:
-                self.eps *= self.decay_factor
-            if self.decay_step is not None:
-                self.eps -= self.decay_step
+        if self.eps > self.final_eps:
+            self.eps -= self.decay_step
 
         if np.random.sample() < self.eps:
             return np.random.randint(0, len(values))
         else:
-            return np.argmax(scores)
+            return np.argmax(values)
 
     def get_config(self):
         """The Greedy policy does not have any parameters."""
         return {"start_epsilon": self.start_eps,
                 "epsilon": self.eps,
-                "decay_factor": self.decay_factor,
-                "decay_step": self.decay_step,
-                "steps_between_decay": self.steps_between_decay,
+                "final_epsilon": self.final_eps,
+                "decay": self.decay,
+                "steps_to_final_eps": self.steps_to_final_eps,
                 "counter": self.counter}
 
     def reset(self):
