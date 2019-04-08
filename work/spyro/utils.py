@@ -23,6 +23,8 @@ def make_env(env_cls, env_params):
         except:
             raise ValueError("{} is not a valid gym environment.".format(env_cls))
     else:  # it should be a callable
+        if env_params is None:
+            env_params = {}
         env = env_cls(**env_params)
     return env
 
