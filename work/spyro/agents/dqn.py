@@ -75,11 +75,12 @@ class DQNAgent(BaseAgent):
                         self.next_online_qvalues = build_dqn(self.next_states_ph, self.n_actions, **build_dqn_params)
 
                     self.next_action = tf.argmax(self.next_online_qvalues, axis=1)
-                    self.next_action_target_qvalue = tf.gather(self.next_target_qvalues, self.next_action, axis=1)
-                    self.target = tf.stop_gradient(self.rewards_ph + self.gamma * self.next_action_target_qvalue)
+                    self.next_action_one_hot = tf.one_hot(self.next_action, self.n_actions, dtype=self.next_target_qvalues.dtype)
+                    self.next_action_target_qvalue = tf.reduce_sum(self.next_target_qvalues * self.next_action_one_hot, axis=1, keepdims=True)
+                    self.targets = self.rewards_ph + self.gamma * self.next_action_target_qvalue
 
                 else:  # no double dqn, use only the target network to predict next state value
-                    self.target = self.rewards_ph + self.gamma * tf.reduce_max(self.next_target_qvalues, keepdims=True, axis=1)
+                    self.targets = self.rewards_ph + self.gamma * tf.reduce_max(self.next_target_qvalues, keepdims=True, axis=1)
 
             else:  # no target network, do everything with the online network
                 with tf.variable_scope("online", reuse=True):
@@ -229,3 +230,29 @@ class DQNAgent(BaseAgent):
             }
         )
         self.summary_writer.add_summary(loss_summ, self.step_counter)
+
+    def get_config(self):
+        """Return configuration of the agent as a dictionary."""
+        config = {
+            "name": self.name,
+            "policy": self.policy.get_config(),
+            "memory": self.memory.get_config(),
+            "use_target_network": self.use_target_network,
+            "double_dqn": self.double_dqn,
+            "dueling_dqn": self.dueling_dqn,
+            "batch_size": self.batch_size,
+            "tau": self.tau,
+            "train_frequency": self.train_frequency,
+            "td_lambda": self.td_lambda,
+            "optimization": self.optimization,
+            "n_layers": self.n_layers,
+            "n_neurons": self.n_neurons,
+            "activation": self.activation,
+            "value_neurons": self.value_neurons,
+            "advantage_neurons": self.advantage_neurons,
+            "logdir": self.logdir,
+            "learning_rate": self.learning_rate,
+            "gradient_clip": self.gradient_clip,
+            "gamma": self.gamma
+        }
+        return config
