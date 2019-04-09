@@ -204,10 +204,8 @@ class EpsilonGreedyPolicy(BasePolicy):
                 "epsilon": self.eps,
                 "final_epsilon": self.final_eps,
                 "decay": self.decay,
-                "steps_to_final_eps": self.steps_to_final_eps,
-                "counter": self.counter}
+                "steps_to_final_eps": self.steps_to_final_eps}
 
     def reset(self):
         """Reset epsilon to its start value."""
         self.eps = self.start_eps
-        self.counter = 0

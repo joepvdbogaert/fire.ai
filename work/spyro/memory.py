@@ -49,8 +49,13 @@ class BaseMemory(object):
         """Sample a batch of experiences. This depends on specific memory type
         (e.g., prioritized vs random)."""
 
+    @abstractmethod
+    def get_config(self):
+        """Get configuration parameters as a dictionary."""
 
 class ReplayBuffer(BaseMemory):
+
+    name = "ReplayBuffer"
 
     def __init__(self, size=50000, keys=["states", "actions", "rewards", "next_states", "terminal"]):
         super().__init__(size=size, keys=keys)
@@ -58,3 +63,9 @@ class ReplayBuffer(BaseMemory):
     def sample(self, batch_size):
         index = np.random.randint(0, self.__len__(), size=batch_size)
         return self.get(index)
+
+    def get_config(self):
+        return {
+            "name": self.name,
+            "size": self.size
+        }
