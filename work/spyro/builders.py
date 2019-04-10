@@ -15,10 +15,10 @@ def build_actor_critic_mlp(inputs, n_actions, n_layers=3, n_neurons=512, activat
                                  activation=activation)
 
     with tf.variable_scope(scope_actor):
-        action_probas = tf.layers.dense(inputs, n_actions, activation=tf.nn.softmax)
+        action_probas = tf.layers.dense(network, n_actions, activation=tf.nn.softmax)
 
     with tf.variable_scope(scope_critic):
-        value_prediction = tf.layers.dense(inputs, 1, activation="linear")
+        value_prediction = tf.layers.dense(network, 1, activation="linear")
 
     return action_probas, value_prediction
 
