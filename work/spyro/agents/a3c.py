@@ -67,7 +67,7 @@ class A3CWorker(mp.Process):
         Any parameters that should be used to initialize the environment.
     """
     def __init__(self, env_cls, global_T, global_queue, global_weights, weight_shapes,
-                 policy, tmax=16, total_steps=1000000, name="A3C_Actor_learner",
+                 policy, tmax=16, total_steps=1000000, name="A3C_Worker",
                  beta=0.01, gamma=0.9, td_steps=10, n_layers=2, n_neurons=512, activation="relu",
                  learning_rate=1e-3, env_params=None, logdir="log", log=True):
 
@@ -139,15 +139,15 @@ class A3CWorker(mp.Process):
                 self.actor_target_ph = tf.placeholder(tf.float64, shape=(None, 1), name="actor_target_ph")  # normally the Advantage
 
                 # compute the entropy of the current policy pi(a|s) for regularization
-                self.entropy = - tf.reduce_sum(self.action_probs * tf.log(self.action_probs + self.tiny_value), axis=1)
+                self.entropy = - tf.reduce_sum(self.action_probs * tf.log(self.action_probs + self.tiny_value), keepdims=True, axis=1)
                 self.mean_entropy = tf.reduce_mean(self.entropy)
 
                 # compute policy gradients
-                self.action_one_hot = tf.reshape(tf.one_hot(self.action_ph, self.n_actions, dtype=tf.float64), (-1, self.n_actions))    
-                self.taken_action_prob = tf.reduce_sum(self.action_probs * self.action_one_hot, axis=1)
+                self.action_one_hot = tf.reshape(tf.one_hot(self.action_ph, self.n_actions, dtype=tf.float64), (-1, self.n_actions)) 
+                self.taken_action_prob = tf.reduce_sum(self.action_probs * self.action_one_hot, keepdims=True, axis=1)
                 self.log_action_prob = tf.log(self.taken_action_prob + self.tiny_value)
                 self.objective = self.log_action_prob * self.actor_target_ph + self.entropy * self.beta
-                self.actor_max_obj = tf.reduce_mean(self.objective)
+                self.actor_max_obj = tf.reduce_mean(tf.squeeze(self.objective))
                 self.actor_loss = - self.actor_max_obj
                 # self.actor_optimizer = tf.train.RMSPropOptimizer(learning_rate=self.learning_rate)
 
@@ -155,7 +155,7 @@ class A3CWorker(mp.Process):
                 self.critic_target_ph = tf.placeholder(tf.float64, shape=(None, 1), name="critic_target_ph")  # normally the n-step Return G_{t:t+n}
 
                 # compute value gradient
-                self.value_loss = tf.reduce_mean(tf.square(self.critic_target_ph - self.value_pred))  # (root) mean squared error
+                self.value_loss = tf.reduce_mean(tf.squeeze(tf.square(self.critic_target_ph - self.value_pred)))  # (root) mean squared error
                 # self.value_optimizer = tf.train.RMSPropOptimizer(learning_rate=self.learning_rate)
 
             # total loss
@@ -191,7 +191,7 @@ class A3CWorker(mp.Process):
             total_loss_summary = tf.summary.scalar("total_loss", self.total_loss)
             actor_objective_summary = tf.summary.scalar("actor_maximize_objective", self.actor_max_obj)
             entropy_summary = tf.summary.scalar("entropy", self.mean_entropy)
-            actor_probs_summary =tf.summary.histogram("policy_pi", self.action_probs)
+            actor_probs_summary = tf.summary.histogram("policy_pi", self.action_probs)
             self.summary_op = tf.summary.merge(
                 [total_reward_summary, mean_reward_summary, actor_loss_summary,
                  critic_loss_summary, actor_probs_summary, entropy_summary,
@@ -395,7 +395,7 @@ class A3CAgent(BaseAgent):
         self.max_queue_size = max_queue_size
 
         # process rest of input
-        super().__init__(policy, *args, **kwargs)
+        super().__init__(policy, log_prefix="A3C_run", *args, **kwargs)
 
     def _init_graph(self):
         """Initialize Tensorflow graph."""

@@ -1,3 +1,4 @@
+import os
 from abc import ABCMeta
 from abc import abstractmethod
 
@@ -25,6 +26,7 @@ class BaseAgent(object):
         self.logdir = find_free_numbered_subdir(logdir, prefix=log_prefix)
         self.log = log
         if log:
+            os.mkdir(self.logdir)
             print("Logging in directory: {}".format(self.logdir))
 
         # policies
