@@ -14,7 +14,7 @@ def response_time_penalty(response_time, target, valid=True):
     return -response_time
 
 def linear_lateness_penalty(response_time, target, valid=True):
-    return np.minimum(target - response_time, 0)
+    return np.minimum(target - response_time, 0) if valid else -2000
 
 def squared_lateness_penalty(response_time, target, valid=True):
     return -(np.minimum(target - response_time, 0)**2)
