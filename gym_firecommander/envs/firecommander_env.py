@@ -50,6 +50,9 @@ class FireCommanderEnv(gym.Env):
         self.allow_nonempty = allow_nonempty
         # for rendering actions and states on top of each other
         np.set_printoptions(sign=" ")
+        self.is_done = True
+        self.last_action = (None, None)
+        self.reward = None
 
     def step(self, action):
         """Take one step in the environment and give back the results.
@@ -81,6 +84,8 @@ class FireCommanderEnv(gym.Env):
             response = np.inf
             while response == np.inf:
                 response, target = self._simulate()
+            if np.isnan(target):  # prio 2 or 3 incident: no target exists
+                target = response
 
         self.last_action = action if self.action_type == "tuple" else self.action_num_to_tuple[action]
         # calculate reward and new state
@@ -200,7 +205,7 @@ class FireCommanderEnv(gym.Env):
             self._get_reward = on_time_plus_minus_one
         else:
             raise ValueError("'reward' must be one of {}. Received {}".format(
-                             self.metadata['reward_functions'], reward))
+                             self.metadata['reward_functions'], reward_func))
 
     def _simulate(self):
         """ Simulate a single incident and all corresponding deployments"""
@@ -261,8 +266,8 @@ class FireCommanderEnv(gym.Env):
             "vehicles": self.sim.vehicles,
             "stations": self.sim.stations,
             "state": self.state,
-            "reward": self.reward,
-            "last_action": self.last_action,
+            # "reward": self.reward,
+            # "last_action": self.last_action,
             "done": self.is_done}
         return copy.deepcopy(data)
 
@@ -279,8 +284,8 @@ class FireCommanderEnv(gym.Env):
         self.sim.vehicles = data["vehicles"]
         self.sim.stations = data["stations"]
         self.state = data["state"]
-        self.reward = data["reward"]
-        self.last_action = data["last_action"]
+        # self.reward = data["reward"]
+        # self.last_action = data["last_action"]
         self.is_done = data["done"]
         self.sim._add_base_stations_to_vehicles()
         self.sim.set_max_target(self.sim.max_target)
