@@ -76,20 +76,18 @@ class DQNAgent(BaseAgent):
 
                     self.next_action = tf.argmax(self.next_online_qvalues, axis=1)
                     self.next_action_one_hot = tf.one_hot(self.next_action, self.n_actions, dtype=self.next_target_qvalues.dtype)
-                    self.next_action_target_qvalue = tf.reduce_sum(self.next_target_qvalues * self.next_action_one_hot, axis=1, keepdims=True)
-                    self.targets = self.rewards_ph + self.gamma * self.next_action_target_qvalue
+                    self.next_action_qvalue = tf.reduce_sum(self.next_target_qvalues * self.next_action_one_hot, axis=1, keepdims=True)
 
                 else:  # no double dqn, use only the target network to predict next state value
-                    self.targets = self.rewards_ph + self.gamma * tf.reduce_max(self.next_target_qvalues, keepdims=True, axis=1)
+                    self.next_action_qvalue = tf.reduce_max(self.next_target_qvalues, keepdims=True, axis=1)
 
             else:  # no target network, do everything with the online network
                 with tf.variable_scope("online", reuse=True):
                     self.next_online_qvalues = build_dqn(self.next_states_ph, self.n_actions, **build_dqn_params)
-                    self.next_state_values = tf.reduce_max(self.next_online_qvalues, axis=1, keepdims=True, name="next_state_values")
+                    self.next_action_qvalue = tf.reduce_max(self.next_online_qvalues, axis=1, keepdims=True, name="next_action_qvalue")
                     # self.next_online_qvalues = tf.identity(self.next_online_qvalues, name="next_online_qvalues")
 
-                self.targets = self.rewards_ph + self.gamma * self.next_state_values
-
+            self.targets = self.rewards_ph + self.gamma * self.next_action_qvalue
             self.target = tf.stop_gradient(tf.where(self.dones_ph, x=self.rewards_ph, y=self.targets), name="target")
             # select the predicted q-values for the taken actions
             self.action_one_hot = tf.one_hot(self.actions_ph, self.n_actions, dtype=tf.float64, name="action_one_hot")
@@ -129,7 +127,9 @@ class DQNAgent(BaseAgent):
             total_reward_summary = tf.summary.scalar("total_episode_reward", self.total_reward)
             mean_reward_summary = tf.summary.scalar("mean_episode_reward", self.mean_reward)
             self.episode_summary = tf.summary.merge([total_reward_summary, mean_reward_summary])
-            self.loss_summary = tf.summary.scalar("loss", self.loss)
+            loss_summary = tf.summary.scalar("loss", self.loss)
+            qvalue_summary = tf.summary.histogram("qvalues", self.online_qvalues)
+            self.step_summary = tf.summary.merge([loss_summary, qvalue_summary])
             self.summary_writer = tf.summary.FileWriter(self.logdir, self.session.graph)
 
         self.session.run(tf.global_variables_initializer())
@@ -138,22 +138,27 @@ class DQNAgent(BaseAgent):
         print("Tensorflow graph trainable variables in target scope:")
         print([v.name for v in tf.trainable_variables(scope=self.name + "/target")])
 
-    def fit(self, env_cls, total_steps=4e7, warmup_steps=10000, tmax=None, env_params=None):
+    def fit(self, env_cls, total_steps=4e7, warmup_steps=10000, tmax=None, env_params=None, restart=True):
         """Train the agent on a given environment."""
-        self.total_steps = total_steps
+
         self.warmup_steps = warmup_steps
         self.tmax = tmax
-        self.env = make_env(env_cls, env_params)
-        self.action_shape, self.n_actions, self.obs_shape, _ = \
-                obtain_env_information(env_cls, env_params)
+        if restart:
+            self.total_steps = total_steps
+            self.env = make_env(env_cls, env_params)
+            self.action_shape, self.n_actions, self.obs_shape, _ = \
+                    obtain_env_information(env_cls, env_params)
 
-        self._init_graph()
-        if self.use_target_network:
-            self.hard_update_target_network()
+            self._init_graph()
+            if self.use_target_network:
+                self.hard_update_target_network()
 
-        self.episode_counter = 0
-        self.step_counter = 0
-        self.done = True
+            self.episode_counter = 0
+            self.step_counter = 0
+            self.done = True
+        else:
+            self.total_steps += total_steps
+
         while self.step_counter < total_steps:
             self.run_session()
             self.episode_counter += 1
@@ -219,8 +224,8 @@ class DQNAgent(BaseAgent):
         """Perform a train step using a batch sampled from memory."""
         states, actions, rewards, next_states, dones = self.memory.sample(batch_size=self.batch_size)
         # reshape to minimum of two dimensions
-        loss_summ, _ = self.session.run(
-            [self.loss_summary, self.train_op],
+        step_summ, _ = self.session.run(
+            [self.step_summary, self.train_op],
             feed_dict={
                 self.states_ph: states.reshape(-1, *self.obs_shape),
                 self.actions_ph: actions.reshape(-1, *self.action_shape),
@@ -229,7 +234,7 @@ class DQNAgent(BaseAgent):
                 self.dones_ph: dones.reshape(-1, 1)
             }
         )
-        self.summary_writer.add_summary(loss_summ, self.step_counter)
+        self.summary_writer.add_summary(step_summ, self.step_counter)
 
     def get_config(self):
         """Return configuration of the agent as a dictionary."""
