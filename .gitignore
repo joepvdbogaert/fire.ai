@@ -115,8 +115,8 @@ data/
 *.ipynb
 *.shp
 
-# simulators
-*.fdsim
+# uncomment to ignore simulators
+# *.fdsim
 
 # results and logs
 work/results/
