@@ -41,8 +41,11 @@ class FireCommanderEnv(gym.Env):
         self.station_names = np.sort([s.name for s in self.sim.stations.values()])
         self.num_stations = len(self.station_names)
         self.num_vehicles = len(self.sim.vehicles)
-        # define action and observation spaces
-        self.observation_space = gym.spaces.MultiDiscrete(np.ones(self.num_stations) * (self.num_vehicles + 1))
+        # define observation spaces
+        veh_arr = np.ones(self.num_stations) * (self.num_vehicles + 1)
+        time_arr = np.array([7, 24])
+        self.observation_space = gym.spaces.MultiDiscrete(np.concatenate((veh_arr, time_arr)))
+        # define action space
         self.action_type = action_type
         if action_type == "num":
             self.station_numbers = np.arange(len(self.station_names))
