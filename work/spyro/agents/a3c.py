@@ -80,9 +80,6 @@ class A3CWorker(mp.Process):
         # create environment and save some info about it
         self.env_cls = env_cls
         self.env_params = env_params
-        # self.env = make_env(env_cls, env_params)
-        # self.observation_space = self.env.observation_space
-        # self.action_space = self.env.action_space
 
         # save the policy
         self.policy = policy
@@ -154,9 +151,8 @@ class A3CWorker(mp.Process):
             with tf.variable_scope("critic/"):
                 self.critic_target_ph = tf.placeholder(tf.float64, shape=(None, 1), name="critic_target_ph")  # normally the n-step Return G_{t:t+n}
 
-                # compute value gradient
-                self.value_loss = tf.reduce_mean(tf.squeeze(tf.square(self.critic_target_ph - self.value_pred)))  # (root) mean squared error
-                # self.value_optimizer = tf.train.RMSPropOptimizer(learning_rate=self.learning_rate)
+                # compute value loss: (root) mean squared error
+                self.value_loss = tf.reduce_mean(tf.squeeze(tf.square(self.critic_target_ph - self.value_pred)))
 
             # total loss
             self.total_loss = self.actor_loss + 0.5 * self.value_loss
@@ -174,8 +170,6 @@ class A3CWorker(mp.Process):
             self.critic_var_list = self.shared_var_list + tf.trainable_variables(scope=self.name + "/critic")
 
             # compute the gradients
-            # self.actor_grads_and_vars = self.actor_optimizer.compute_gradients(self.actor_loss, self.actor_var_list)
-            # self.critic_grads_and_vars = self.value_optimizer.compute_gradients(self.value_loss, self.critic_var_list)
             self.grads_and_vars = self.optimizer.compute_gradients(self.total_loss, self.var_list)
 
             # placeholders and operation for setting weights of global model to local one
@@ -297,16 +291,6 @@ class A3CWorker(mp.Process):
         rewards = np.reshape(rewards, (-1, 1))
 
         # calculate the gradients for both actor and critic
-        # summary, actor_grads_vars, critic_grads_vars = self.session.run(
-        #     [self.summary_op, self.actor_grads_and_vars, self.critic_grads_and_vars],
-        #     feed_dict={
-        #         self.state_ph: states,
-        #         self.action_ph: actions,
-        #         self.critic_target_ph: returns,
-        #         self.actor_target_ph: advantages,
-        #         self.rewards_ph: rewards
-        #     }
-        # )
         summary, grads_vars = self.session.run(
             [self.summary_op, self.grads_and_vars],
             feed_dict={
@@ -322,10 +306,6 @@ class A3CWorker(mp.Process):
         self.summary_writer.add_summary(summary, self.local_episode_counter)
 
         # keep only the gradient and sum those of actor and critic to obtain a single
-        # gradient per variable
-        #         actor_grads = [grads for grads, var in actor_grads_vars]
-        #         critic_grads = [grads for grads, var in critic_grads_vars]
-        #         gradients = {"actor": actor_grads, "critic": critic_grads}
         gradients = [grads for grads, var in grads_vars]
         return gradients
 
@@ -379,6 +359,7 @@ class A3CAgent(BaseAgent):
                  *args, **kwargs):
 
         self.name = name
+        mp.set_start_method("spawn")
 
         # model parameters
         self.model_params = {
@@ -421,10 +402,6 @@ class A3CAgent(BaseAgent):
             self.optimizer = tf.train.RMSPropOptimizer(learning_rate=self.learning_rate)
 
             # apply gradients placeholders and operations
-#             self.actor_grads_ph = [tf.placeholder(tf.float64) for _ in range(len(self.actor_var_list))]
-#             self.critic_grads_ph = [tf.placeholder(tf.float64) for _ in range(len(self.critic_var_list))]
-#             self.actor_train_op = self.optimizer.apply_gradients(zip(self.actor_grads_ph, self.actor_var_list))
-#             self.critic_train_op = self.optimizer.apply_gradients(zip(self.critic_grads_ph, self.critic_var_list))
             self.grads_ph = [tf.placeholder(tf.float64) for _ in range(len(self.var_list))]
             self.train_op = self.optimizer.apply_gradients(zip(self.grads_ph, self.var_list))
             self.session.run(tf.global_variables_initializer())
