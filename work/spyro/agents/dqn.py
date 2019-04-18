@@ -119,7 +119,7 @@ class DQNAgent(BaseAgent):
                 a_min, a_max = self.gradient_clip
                 self.grads_and_vars = [(tf.clip_by_value(grad, a_min, a_max), var) for grad, var in self.grads_and_vars]
             self.train_op = self.optimizer.apply_gradients(self.grads_and_vars)
-       
+
         # write to tensorboard
         if self.log:
             self.total_reward = tf.placeholder(tf.float64, shape=())
@@ -129,7 +129,10 @@ class DQNAgent(BaseAgent):
             self.episode_summary = tf.summary.merge([total_reward_summary, mean_reward_summary])
             loss_summary = tf.summary.scalar("loss", self.loss)
             qvalue_summary = tf.summary.histogram("qvalues", self.online_qvalues)
-            self.step_summary = tf.summary.merge([loss_summary, qvalue_summary])
+            action_summary = tf.summary.scalar("prop_no_relocation",
+                tf.reduce_mean(tf.cast(tf.equal(tf.squeeze(self.actions_ph), 0), tf.float64))
+            )
+            self.step_summary = tf.summary.merge([loss_summary, qvalue_summary, action_summary])
             self.summary_writer = tf.summary.FileWriter(self.logdir, self.session.graph)
 
         self.session.run(tf.global_variables_initializer())
