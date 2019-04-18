@@ -33,7 +33,7 @@ class FireCommanderEnv(gym.Env):
                 'action_types': ['num', 'tuple', 'multi', 'set_1']}
 
     def __init__(self, reward_func='response_time_penalty', worst_response=25*60, action_type="num",
-                 allow_nonempty=True):
+                 allow_nonempty=True, episode_threshold=2):
         # load simulator
         self.sim = self._load_simulator()
         self.sim.initialize_without_simulating()
@@ -69,6 +69,8 @@ class FireCommanderEnv(gym.Env):
         self.worst_response = worst_response
         # whether to consider relocation to a non-empty station as invalid
         self.allow_nonempty = allow_nonempty
+        # at which number of emtpy stations to start an episode
+        self.episode_threshold = episode_threshold
         # for rendering actions and states on top of each other
         np.set_printoptions(sign=" ")
         self.is_done = True
@@ -178,7 +180,11 @@ class FireCommanderEnv(gym.Env):
         return sim
 
     def _extract_state(self):
-        return self._get_available_vehicles(), self._check_episode_end_condition()
+        state = np.concatenate([
+            self._get_available_vehicles(),
+            np.array([self.time.weekday(), np.array(self.time.hour)])
+        ])
+        return state, self._check_episode_end_condition()
 
     def _get_available_vehicles(self):
         stations, counts = np.unique([v.current_station_name for v in self.sim.vehicles.values()
@@ -190,7 +196,7 @@ class FireCommanderEnv(gym.Env):
     def _check_episode_start_condition(self):
         """Check whether the simulator is at a situation where a train episode can start."""
         vehicles = self._get_available_vehicles()
-        if np.sum(vehicles == 0) >= 2:
+        if np.sum(vehicles == 0) >= self.episode_threshold:
             return True
         else:
             return False
@@ -198,7 +204,7 @@ class FireCommanderEnv(gym.Env):
     def _check_episode_end_condition(self):
         """Check whether the simulator is at a situation where a train episode ends."""
         vehicles = self._get_available_vehicles()
-        if np.sum(vehicles == 0) < 2:
+        if np.sum(vehicles == 0) < self.episode_threshold:
             return True
         else:
             return False
