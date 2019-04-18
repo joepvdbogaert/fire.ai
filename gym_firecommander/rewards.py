@@ -20,9 +20,12 @@ def squared_lateness_penalty(response_time, target, valid=True):
     return -(np.minimum(target - response_time, 0)**2)
 
 def tanh_reward(response_time, target, valid=True):
-    return np.tanh(target - response_time)
+    return np.tanh(target - response_time / 60) if valid else -1
 
 def on_time_plus_minus_one(response_time, target, valid=True, invalid_reward=-5):
     if not valid:
         return invalid_reward
     return 1 if response_time <= target else -1
+
+def spare_time(response_time, target, valid=True):
+    return target - response_time if valid else -2000

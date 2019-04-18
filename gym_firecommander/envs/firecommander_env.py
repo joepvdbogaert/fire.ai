@@ -11,15 +11,26 @@ from fdsim.simulation import Simulator
 
 from gym_firecommander.rewards import (
     binary_reward, response_time_penalty, linear_lateness_penalty,
-    squared_lateness_penalty, tanh_reward, on_time_plus_minus_one
+    squared_lateness_penalty, tanh_reward, on_time_plus_minus_one,
+    spare_time
 )
+
+
+ACTION_SET_1 = [
+    ("DIEMEN", "VICTOR"),
+    ("AMSTELVEEN", "UITHOORN"),
+    ("AMSTELVEEN", "DIRK"),
+    ("AMSTELVEEN", "OSDORP"),
+    ("NICO", "ZEBRA")
+]
 
 
 class FireCommanderEnv(gym.Env):
     metadata = {'render.modes': ['human'],
                 'reward_functions': ['binary_reward', 'response_time_penalty', 'tanh_reward',
                                      'linear_lateness_penalty', 'squared_lateness_penalty',
-                                     'plus_minus_one']}
+                                     'plus_minus_one', 'spare_time'],
+                'action_types': ['num', 'tuple', 'multi', 'set_1']}
 
     def __init__(self, reward_func='response_time_penalty', worst_response=25*60, action_type="num",
                  allow_nonempty=True):
@@ -42,6 +53,16 @@ class FireCommanderEnv(gym.Env):
                 (gym.spaces.Discrete(self.num_stations + 1), gym.spaces.Discrete(self.num_stations)))
         elif action_type == "multi":
             self.action_space = gym.spaces.MultiDiscrete([self.num_stations + 1, self.num_stations])
+        elif action_type == "set_1":
+            self.action_space = gym.spaces.Discrete(len(ACTION_SET_1))
+            self.action_num_to_tuple = [(None, None)] + [
+                (np.nonzero(self.station_names == origin)[0][0], np.nonzero(self.station_names == destination)[0][0])
+                for origin, destination in ACTION_SET_1
+            ]
+        else:
+            raise ValueError("action_type must be one of {}. Got {}"
+                             .format(self.metadata['action_types'], action_type))
+
         # and reward function
         self._assign_reward_function(reward_func)
         # define worst possible response time
@@ -119,11 +140,11 @@ class FireCommanderEnv(gym.Env):
 
     def _take_action(self, action):
         assert self.action_space.contains(action), "Action not in action space."
-        if self.action_type == "num":
+        if self.action_type in ["num", "set_1"]:
             # action=0 means do not relocate
             if action == 0:
-                return True
                 self.last_action = (None, None)
+                return True
             else:
                 action = self.action_num_to_tuple[action]
                 self.last_action = action
@@ -203,6 +224,8 @@ class FireCommanderEnv(gym.Env):
             self._get_reward = tanh_reward
         elif reward_func == "plus_minus_one":
             self._get_reward = on_time_plus_minus_one
+        elif reward_func == "spare_time":
+            self._get_reward = spare_time
         else:
             raise ValueError("'reward' must be one of {}. Received {}".format(
                              self.metadata['reward_functions'], reward_func))
