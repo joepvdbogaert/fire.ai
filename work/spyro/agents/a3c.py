@@ -183,13 +183,15 @@ class A3CWorker(mp.Process):
             actor_loss_summary = tf.summary.scalar("actor_loss", self.actor_loss)
             critic_loss_summary = tf.summary.scalar("value_loss", self.value_loss)
             total_loss_summary = tf.summary.scalar("total_loss", self.total_loss)
-            actor_objective_summary = tf.summary.scalar("actor_maximize_objective", self.actor_max_obj)
+            action_summary = tf.summary.scalar("prop_no_relocation",
+                tf.reduce_mean(tf.cast(tf.equal(tf.squeeze(self.action_ph), 0), tf.float64))
+            )
             entropy_summary = tf.summary.scalar("entropy", self.mean_entropy)
             actor_probs_summary = tf.summary.histogram("policy_pi", self.action_probs)
             self.summary_op = tf.summary.merge(
                 [total_reward_summary, mean_reward_summary, actor_loss_summary,
                  critic_loss_summary, actor_probs_summary, entropy_summary,
-                 actor_objective_summary, total_loss_summary]
+                 total_loss_summary, action_summary]
             )
             self.summary_writer = tf.summary.FileWriter(self.logdir, self.session.graph)
 
@@ -439,7 +441,7 @@ class A3CAgent(BaseAgent):
     def get_weights(self):
         return self.session.run(self.var_list)
 
-    def fit(self, env_cls, env_params=None, tmax=32, total_steps=50000, n_workers=-1, verbose=True):
+    def fit(self, env_cls, env_params=None, tmax=32, total_steps=50000, n_workers=-1, restart=True, verbose=True):
         """Train the A3C Agent on the environment.
 
         Parameters
@@ -467,11 +469,21 @@ class A3CAgent(BaseAgent):
                              .format(type(env_params)))
 
         self.tmax = tmax
-        self.total_steps = total_steps
+
         # obtain action and observation space information
         self.action_shape, self.n_actions, self.obs_shape, _  = \
                 obtain_env_information(env_cls, env_params)
-        self._init_graph()
+
+        # init graph, continue training, or use loaded graph
+        if restart:
+            self.total_steps = total_steps
+            self._init_graph()
+        else:
+            try:
+                self.total_steps += total_steps
+            except AttributeError:
+                # model was loaded, steps start from zero
+                self.total_steps = total_steps
 
         # determine number of workers
         if n_workers == -1:
@@ -520,7 +532,7 @@ class A3CAgent(BaseAgent):
                         new_weights = self.get_weights()
                         for i in range(len(new_weights)):
                             np.copyto(numpy_weights[i], new_weights[i])
-                        print("Global steps: {}".format(global_T.value))
+                        print("\rGlobal steps: {}".format(global_T.value), end="")
                     elif isinstance(message, str):
                         print(message)
                     else:

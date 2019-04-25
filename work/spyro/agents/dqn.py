@@ -146,12 +146,13 @@ class DQNAgent(BaseAgent):
 
         self.warmup_steps = warmup_steps
         self.tmax = tmax
-        if restart:
-            self.total_steps = total_steps
-            self.env = make_env(env_cls, env_params)
-            self.action_shape, self.n_actions, self.obs_shape, _ = \
-                    obtain_env_information(env_cls, env_params)
+        self.env = make_env(env_cls, env_params)
+        self.action_shape, self.n_actions, self.obs_shape, _ = \
+                obtain_env_information(env_cls, env_params)
 
+        if restart:
+            tf.reset_default_graph()
+            self.total_steps = total_steps
             self._init_graph()
             if self.use_target_network:
                 self.hard_update_target_network()
@@ -160,11 +161,20 @@ class DQNAgent(BaseAgent):
             self.step_counter = 0
             self.done = True
         else:
-            self.total_steps += total_steps
+            try:
+                self.total_steps += total_steps
+            except AttributeError:
+                # counters do not exist, graph must be restored from disk
+                # recreate the counters like on a normal restart
+                self.total_steps = total_steps
+                self.step_counter = 0
+                self.done = True
+                self.episode_counter = 0
 
         while self.step_counter < total_steps:
             self.run_session()
             self.episode_counter += 1
+            print("\rSteps completed: {}/{}".format(self.step_counter, self.total_steps), end="")
 
     def run_session(self):
         """Run a single episode / trial, possibly truncated by t_max."""

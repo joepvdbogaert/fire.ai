@@ -1,11 +1,12 @@
 import os
 from abc import ABCMeta
 from abc import abstractmethod
+import json
 
 import tensorflow as tf
 
 from spyro.policies import GreedyPolicy, EpsilonGreedyPolicy, SoftmaxPolicy
-from spyro.utils import find_free_numbered_subdir
+from spyro.utils import find_free_numbered_subdir, obtain_env_information
 
 
 class BaseAgent(object):
@@ -42,12 +43,30 @@ class BaseAgent(object):
         """Train the agent on an environment."""
 
     @abstractmethod
-    def test(self, policy=None):
+    def test(self, env_cls, env_params=None, policy=None):
         """Test the agent, possibly using a different policy than in training."""
 
-    def save_weights(self, filepath, scope=None):
+    def save_weights(self):
         """Save the trainable variables to continue training later."""
-        pass
+        self.saver = tf.train.Saver()
+        path = self.saver.save(self.session, os.path.join(self.logdir, "model.ckpt"))
 
-    def load_weights(self, filepath):
+        # also save agent configuration
+        with open(os.path.join(self.logdir, "agent_config.json"), "w") as f:
+            json.dump(self.get_config(), f, sort_keys=True, indent=4)
+
+        print("Model and agent settings saved in {}.".format(path))
+
+    def load_weights(self, path, env_cls, env_params=None):
         """Load previously fitted weights."""
+        self.action_shape, self.n_actions, self.obs_shape, _ = \
+                    obtain_env_information(env_cls, env_params)
+        tf.reset_default_graph()
+        self._init_graph()
+        self.saver = tf.train.Saver()
+        self.saver.restore(self.session, path)
+        print("Model restored from {}.".format(path))
+
+    @abstractmethod
+    def get_config(self):
+        """Get agent hyperparameter settings as a Python dictionary."""
