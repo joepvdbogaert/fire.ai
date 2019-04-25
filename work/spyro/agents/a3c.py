@@ -12,7 +12,10 @@ import queue
 import gym
 
 from spyro.core import BaseAgent
-from spyro.targets import n_step_temporal_difference
+from spyro.targets import (n_step_temporal_difference,
+                           monte_carlo_discounted_mean_reward,
+                           n_step_discounted_mean_reward)
+
 from spyro.utils import find_free_numbered_subdir, make_env, obtain_env_information
 from spyro.builders import build_actor_critic_mlp
 
@@ -54,6 +57,10 @@ class A3CWorker(mp.Process):
         The discount factor for future rewards. At time :math:`t`, the reward :math:`r_{t + i}`
         is discounted by :math:`\\gamma^i` in the return calculation of :math:`t`, for all
         :math:`i = 1, ..., td_steps`.
+    returns: str, one of ['mc_mean', 'n_step_mean', 'n_step_td']
+        The return calculation to use. For 'mc_mean', uses Monte Carlo Discounted Mean Rewards,
+        for 'n_step_mean' and 'n_step_td', calculates mean or sum of first n rewards respectively
+        and then bootstraps the next state value.
     td_steps: int, optional default=10
         The number of steps to incorporate explicitly in the return calculation, i.e., the 'n'
         in the n-step Temporal Difference update.
@@ -66,10 +73,18 @@ class A3CWorker(mp.Process):
     **env_params: key-value pairs
         Any parameters that should be used to initialize the environment.
     """
+    metadata = {
+        "return_funcs": {
+            "mc_mean": monte_carlo_discounted_mean_reward,
+            "n_step_mean": n_step_discounted_mean_reward,
+            "n_step_td": n_step_temporal_difference
+        }
+    }
+
     def __init__(self, env_cls, global_T, global_queue, global_weights, weight_shapes,
                  policy, tmax=16, total_steps=1000000, name="A3C_Worker",
-                 beta=0.01, gamma=0.9, td_steps=10, n_layers=2, n_neurons=512, activation="relu",
-                 learning_rate=1e-3, env_params=None, logdir="log", log=True):
+                 beta=0.01, gamma=0.9, returns="mc_mean", td_steps=10, n_layers=2, n_neurons=512,
+                 activation="relu", learning_rate=1e-3, env_params=None, logdir="log", log=True):
 
         # init Process
         super().__init__()
@@ -98,6 +113,7 @@ class A3CWorker(mp.Process):
         self.beta = beta  # the contribution of entropy to the objective function
         self.tmax = tmax
         self.gamma = gamma
+        self.calc_returns = self.metadata["return_funcs"][returns]
         self.td_steps = td_steps
         self.total_steps = total_steps
 
@@ -179,7 +195,7 @@ class A3CWorker(mp.Process):
 
         if self.log:
             total_reward_summary = tf.summary.scalar("total_episode_reward", self.total_reward)
-            mean_reward_summary = tf.summary.scalar("mean_reward_per_step", self.mean_reward)
+            mean_reward_summary = tf.summary.scalar("mean_episode_reward", self.mean_reward)
             actor_loss_summary = tf.summary.scalar("actor_loss", self.actor_loss)
             critic_loss_summary = tf.summary.scalar("value_loss", self.value_loss)
             total_loss_summary = tf.summary.scalar("total_loss", self.total_loss)
@@ -283,8 +299,8 @@ class A3CWorker(mp.Process):
         )
 
         # calculate the n-step returns and advantages
-        returns = n_step_temporal_difference(rewards, state_values,
-                                             gamma=self.gamma, n=self.td_steps)
+        returns = self.calc_returns(rewards, state_values,
+                                    gamma=self.gamma, n=self.td_steps)
 
         # reshape for feeding into tensorflow (time dimension is axis 0)
         returns = returns.reshape((-1, 1))
@@ -341,6 +357,10 @@ class A3CAgent(BaseAgent):
     td_steps: int, optional default=10
         The number of steps to incorporate explicitly in the return calculation, i.e., the 'n'
         in the n-step Temporal Difference update.
+    returns: str, one of ['mc_mean', 'n_step_mean', 'n_step_td']
+        The return calculation to use. For 'mc_mean', uses Monte Carlo Discounted Mean Rewards,
+        for 'n_step_mean' and 'n_step_td', calculates mean or sum of first n rewards respectively
+        and then bootstraps the next state value.
     learning_rate: float, optional, default=1e-3
         The learning rate of the RMSProp optimizer.
     n_layers: int, optional, default=3
@@ -356,7 +376,15 @@ class A3CAgent(BaseAgent):
     ---------- 
     [Mnih et al. (2016)](https://arxiv.org/abs/1602.01783)
     """
-    def __init__(self, policy, name="A3C_Global_Agent", beta=0.05, td_steps=10,
+    metadata = {
+        "return_funcs": {
+            "mc_mean": monte_carlo_discounted_mean_reward,
+            "n_step_mean": n_step_discounted_mean_reward,
+            "n_step_td": n_step_temporal_difference
+        }
+    }
+
+    def __init__(self, policy, name="A3C_Global_Agent", beta=0.05, returns="mc_mean", td_steps=10,
                  n_layers=3, n_neurons=512, activation="relu", max_queue_size=10,
                  *args, **kwargs):
 
@@ -372,6 +400,9 @@ class A3CAgent(BaseAgent):
 
         # algorithm-specific parameters (the rest is passed to BaseAgent)
         self.beta = beta
+        assert returns in self.metadata["return_funcs"].keys(), ("'returns' must be one of {}. Got {}."
+            .format(self.metadata["return_funcs"].keys(), returns))
+        self.return_func = returns
         self.td_steps = td_steps
 
         # assure global does not lack too far behind by letting workers wait for queue slot
@@ -506,7 +537,7 @@ class A3CAgent(BaseAgent):
             A3CWorker(env_cls, global_T, global_queue, shared_weights, weight_shapes,
                       self.policy, tmax=self.tmax, total_steps=total_steps,
                       name="A3C_Worker_{}".format(i), beta=self.beta,
-                      gamma=self.gamma, td_steps=self.td_steps,
+                      gamma=self.gamma, returns=self.return_func, td_steps=self.td_steps,
                       learning_rate=self.learning_rate, logdir=self.logdir,
                       env_params=env_params, **self.model_params)
             for i in range(n_workers)
