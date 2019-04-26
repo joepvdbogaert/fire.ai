@@ -103,6 +103,7 @@ class FireCommanderEnv(gym.Env):
         # check if suggested action is valid
         valid = self._take_action(action)
         if not valid:
+            _, _ = self._simulate()
             response = self.worst_response
             target = 6*60
         else:
