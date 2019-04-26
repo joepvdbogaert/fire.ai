@@ -274,6 +274,9 @@ class A3CWorker(mp.Process):
 
             self.state = np.asarray(new_state, dtype=np.float64)
 
+            with self.global_T.get_lock():
+                self.global_T.value += 1
+
             # stop if episode ends
             if self.done:
                 states = states[0:(i + 1)]
@@ -281,9 +284,6 @@ class A3CWorker(mp.Process):
                 rewards = rewards[0:(i + 1)]
                 dones = dones[0:(i + 1)]
                 break
-
-            with self.global_T.get_lock():
-                self.global_T.value += 1
 
         # calculate the gradients and send them to the global network
         gradients = self.collect_gradients(states, actions, rewards, dones)
@@ -389,7 +389,10 @@ class A3CAgent(BaseAgent):
                  *args, **kwargs):
 
         self.name = name
-        mp.set_start_method("spawn")
+        try:
+            mp.set_start_method("spawn")
+        except RuntimeError:
+            print("multiprocessing method not (re)set to 'spawn', because context was already given.")
 
         # model parameters
         self.model_params = {
@@ -547,6 +550,7 @@ class A3CAgent(BaseAgent):
         for agent in agents:
             agent.start()
 
+        print("Workers started.")
         try:
             # receive and apply gradients while running
             while True:
