@@ -34,7 +34,7 @@ def build_mlp_body(inputs, n_layers=3, n_neurons=512, activation="relu", **kwarg
 def build_mlp_regressor(inputs, n_layers, n_neurons, activation="relu", output_dim=1, **kwargs):
     network = build_mlp_body(inputs, n_layers=n_layers, n_neurons=n_neurons,
                              activation=activation, **kwargs)
-    output = tf.layers.dense(inputs, output_dim, activation="linear")
+    output = tf.layers.dense(network, output_dim, activation="linear")
     return output
 
 
@@ -53,9 +53,41 @@ def build_dqn(inputs, n_actions, n_layers=2, n_neurons=512, activation="relu", d
         advantage_layer = tf.layers.dense(network, advantage_neurons, activation="relu", name="advantage_layer")
         advantage = tf.layers.dense(advantage_layer, n_actions, activation="linear", name="advantage")
         # combine
-        qvalues = value - tf.subtract(advantage, tf.reduce_mean(advantage)  )
+        qvalues = value + tf.subtract(advantage, tf.reduce_mean(advantage))
 
     else:
         qvalues = tf.layers.dense(network, n_actions, activation="linear")
 
+    return qvalues
+
+
+def build_distributional_dqn(inputs, n_actions, num_atoms, n_layers=2, n_neurons=512,
+                             activation="relu", **kwargs):
+    """Build a network for Quantile Regression DQN.
+
+    Parameters
+    ----------
+    inputs: (list of) tf.Placeholder or tf.Tensor
+        The inputs for the model. Normally, the (batch of) state observation(s).
+    n_actions: int
+        The number of actions.
+    num_atoms: int
+        The number of quantiles to predict.
+    n_layers: int, optional, default=2
+        The number of hidden dense layers to use.
+    n_neurons: int, optional, default=512
+        The number of neurons to use in each hidden layer.
+    activation: str, optional, default="relu"
+        The activation function to use. String is directly passed to tf.layers.dense().
+    **kwargs: key-value pairs
+        Other parameters to pass to tf.layers.dense().
+
+    Returns:
+    --------
+    qvalues: 3D tf.Tensor
+        Has shape (inputs.shape[0], n_actions, num_atoms).
+    """
+    network = build_mlp_regressor(inputs, n_layers, n_neurons, activation="relu",
+                                  output_dim=n_actions * num_atoms, **kwargs)
+    qvalues = tf.reshape(network, (-1, n_actions, num_atoms), name="Q_saq")
     return qvalues
