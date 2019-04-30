@@ -59,7 +59,6 @@ class DQNAgent(BaseAgent):
 
             with tf.variable_scope("online"):
                 self.online_qvalues = build_dqn(self.states_ph, self.n_actions, **build_dqn_params)
-                # self.online_qvalues = tf.identity(self.online_qvalues, name="online_qvalues")
 
             if self.use_target_network:
                 with tf.variable_scope("target"):
