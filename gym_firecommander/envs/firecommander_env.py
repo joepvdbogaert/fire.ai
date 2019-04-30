@@ -32,8 +32,8 @@ class FireCommanderEnv(gym.Env):
                                      'plus_minus_one', 'spare_time'],
                 'action_types': ['num', 'tuple', 'multi', 'set_1']}
 
-    def __init__(self, reward_func='response_time_penalty', worst_response=25*60, action_type="num",
-                 allow_nonempty=True, episode_threshold=2):
+    def __init__(self, reward_func='response_time_penalty', worst_response=25*60, action_type="set_1",
+                 allow_nonempty=True, episode_threshold=3):
         # load simulator
         self.sim = self._load_simulator()
         self.sim.initialize_without_simulating()
@@ -269,10 +269,9 @@ class FireCommanderEnv(gym.Env):
                     turnout, travel, onscene = self.sim.rsampler.sample_response_time(
                         type_, loc, vehicle.current_station_name, vehicle.type, vehicle.current_crew,
                         prio, estimated_time=estimated_time)
-                    
-                    vehicle.dispatch(dest, self.sim.t + (onscene/60) + (estimated_time/60))
 
-                response = dispatch + turnout + travel
+                    response = dispatch + turnout + travel
+                    vehicle.dispatch(dest, self.sim.t + (response + onscene + estimated_time) / 60)
 
                 # we must return a numerical value
                 if np.isnan(response):
@@ -299,8 +298,6 @@ class FireCommanderEnv(gym.Env):
             "vehicles": self.sim.vehicles,
             "stations": self.sim.stations,
             "state": self.state,
-            # "reward": self.reward,
-            # "last_action": self.last_action,
             "done": self.is_done}
         return copy.deepcopy(data)
 
@@ -317,8 +314,6 @@ class FireCommanderEnv(gym.Env):
         self.sim.vehicles = data["vehicles"]
         self.sim.stations = data["stations"]
         self.state = data["state"]
-        # self.reward = data["reward"]
-        # self.last_action = data["last_action"]
         self.is_done = data["done"]
         self.sim._add_base_stations_to_vehicles()
         self.sim.set_max_target(self.sim.max_target)
