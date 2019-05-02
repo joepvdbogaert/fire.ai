@@ -71,11 +71,11 @@ class FireCommanderTestEnv(FireCommanderEnv):
 
     def save_test_episodes(self, path):
         assert self.test_episodes is not None, "Nothing to save"
-        pickle.dump(open(path, 'w'), self.test_episodes)
+        pickle.dump(self.test_episodes, open(path, 'wb'))
 
     def load_test_episodes(self, path=None):
         if path is not None:
-            self.test_episodes = pickle.load(path)
+            self.test_episodes = pickle.load(open(path, "rb"))
         else:
             raise ValueError("No path given.")
             # note, later we want to provide additional ways to select
@@ -208,7 +208,7 @@ class FireCommanderTestEnv(FireCommanderEnv):
     def get_test_log(self):
         """Return the concatenated log of test episodes."""
         concat_log = np.concatenate(
-            [np.append(d["log"], np.ones(len(d["log"])).reshape(-1, 1) * key, axis=1)
+            [np.append(d["log"], np.ones((len(d["log"]), 1)) * key, axis=1)
              for key, d in self.data.items()]
         )
         return pd.DataFrame(concat_log, columns=self.sim.log_columns + ["episode"])
