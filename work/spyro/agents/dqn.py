@@ -248,6 +248,65 @@ class DQNAgent(BaseAgent):
         )
         self.summary_writer.add_summary(step_summ, self.step_counter)
 
+    def evaluate(self, env_cls, n_episodes=10000, tmax=None, policy=None, env_params=None, init=False):
+        """Evaluate the agent on an environemt without training."""
+        if policy is not None:
+            self.eval_policy = policy
+        else:
+            self.eval_policy = self.policy
+
+        self.tmax = tmax
+        self.env = make_env(env_cls, env_params)
+        self.action_shape, self.n_actions, self.obs_shape, _ = \
+                obtain_env_information(env_cls, env_params)
+
+        if init:
+            tf.reset_default_graph()
+            self._init_graph()
+
+        self.episode_counter = 0
+        self.step_counter = 0
+        self.done = True
+
+        self.eval_results = {
+            "total_episode_reward": np.zeros(n_episodes),
+            "mean_episode_reward": np.zeros(n_episodes),
+            "episode_length": np.zeros(n_episodes),
+        }
+
+        for ep in range(n_episodes):
+            self.state = np.asarray(self.env.reset(), dtype=np.float64)
+            self.episode_step_counter = 0
+            self.episode_reward = 0
+
+            for i in range(self.tmax):
+
+                # predict Q-values Q(s,a)
+                qvalues = self.session.run(
+                    self.online_qvalues,
+                    feed_dict={self.states_ph: np.reshape(self.state, (1, -1))}
+                )
+
+                # select and perform action
+                self.action = self.eval_policy.select_action(qvalues.reshape(-1))
+                new_state, self.reward, self.done, _ = self.env.step(self.action)
+
+                # bookkeeping
+                self.step_counter += 1
+                self.episode_reward += self.reward
+                self.episode_step_counter += 1
+                self.state = np.asarray(copy.copy(new_state), dtype=np.float64)
+
+                # end of episode
+                if self.done:
+                    break
+
+            self.eval_results["total_episode_reward"][ep] = self.episode_reward
+            self.eval_results["mean_episode_reward"][ep] = self.episode_reward / self.episode_step_counter
+            self.eval_results["episode_length"][ep] = self.episode_step_counter
+
+        return self.eval_results
+
     def get_config(self):
         """Return configuration of the agent as a dictionary."""
         config = {
