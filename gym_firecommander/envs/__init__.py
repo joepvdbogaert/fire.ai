@@ -1,2 +1,3 @@
 from gym_firecommander.envs.firecommander_env import FireCommanderEnv
 from gym_firecommander.envs.firecommander_hard_env import FireCommanderHardEnv
+from gym_firecommander.envs.firecommander_test_env import FireCommanderTestEnv
