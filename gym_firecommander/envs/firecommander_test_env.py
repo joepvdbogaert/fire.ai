@@ -61,9 +61,8 @@ class FireCommanderTestEnv(FireCommanderEnv):
                     "log": sim_log
                 }
 
+                print("\rCreated episode {}/{}".format(ep_counter + 1, n_episodes), end="")
                 ep_counter += 1
-
-        self.reset_test_episodes()
 
     def get_test_episodes(self):
         assert hasattr(self, "test_episodes"), "First run 'create_test_episodes' or 'load_test_episodes'"
@@ -86,7 +85,7 @@ class FireCommanderTestEnv(FireCommanderEnv):
         """Start from the beginning of the test data."""
         self.ep = -1
         self.log_row = 0
-        self.data = copy.deepcopy(self.test_episodes)
+        self.data = self.test_episodes
 
     def step(self, action):
         """Take one step in the environment and give back the results.

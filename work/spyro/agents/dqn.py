@@ -305,6 +305,8 @@ class DQNAgent(BaseAgent):
             self.eval_results["mean_episode_reward"][ep] = self.episode_reward / self.episode_step_counter
             self.eval_results["episode_length"][ep] = self.episode_step_counter
 
+            print("\rCompleted episode {}/{}".format(ep, n_episodes), end="")
+
         return self.eval_results
 
     def get_config(self):
