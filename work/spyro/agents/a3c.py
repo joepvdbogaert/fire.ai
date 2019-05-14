@@ -16,7 +16,7 @@ from spyro.targets import (n_step_temporal_difference,
                            monte_carlo_discounted_mean_reward,
                            n_step_discounted_mean_reward)
 
-from spyro.utils import find_free_numbered_subdir, make_env, obtain_env_information
+from spyro.utils import find_free_numbered_subdir, make_env, obtain_env_information, get_space_shape
 from spyro.builders import build_actor_critic_mlp
 
 
@@ -341,11 +341,6 @@ class A3CAgent(BaseAgent):
     name: str, optional, default="A3C_Global_Agent"
         The name of the agent, which is used to define its variable scope in the Tensorflow
         graph to avoid mix-ups with other tensorflow activities.
-    total_steps: int, optional, default=50,000
-        The total number of steps to train of all workers together.
-    tmax: int, optional, default=32
-        The maximum number of steps for a worker to run before calculating gradients
-        and updating the global model if the episode is not over earlier.
     beta: float, optional, default=0.05
         The contribution of entropy to the total loss of the actor. Specifically, the actor's
         gradient is calculated over :math:`log \\pi_{\\theta}(a_t | s_t)A(a_t, s_t) + \\beta H`
@@ -490,9 +485,15 @@ class A3CAgent(BaseAgent):
             Dictionary of parameter values to pass to `env_cls` upon initialization.
         total_steps: int, optional, default=50,000
             The total number of training steps of all workers together.
+        tmax: int, optional, default=32
+            The maximum number of steps for a worker to run before calculating gradients
+            and updating the global model if the episode is not over earlier.
         n_workers: int, optional, default=-1
             The number of worker processes to use. If set to -1, uses all but one of
             the available cores.
+        restart: boolean, default=True
+            Whether to (re-)initialize the network (True) or to keep the current neural
+            network parameters (False).
         """
         if isinstance(env_params, dict):
             env_params = env_params
@@ -578,3 +579,88 @@ class A3CAgent(BaseAgent):
 
         for agent in agents:
             agent.join()
+
+    def evaluate(self, env_cls, n_episodes=10000, tmax=None, policy=None, env_params=None, init=False):
+        """Evaluate the agent on an environemt without training."""
+        if policy is not None:
+            self.eval_policy = policy
+        else:
+            self.eval_policy = self.policy
+
+        if tmax is None:
+            self.tmax = 1000000
+        else:
+            self.tmax = tmax
+
+        self.env = make_env(env_cls, env_params)
+        self.action_shape, self.n_actions = get_space_shape(self.env.action_space)
+        self.obs_shape, _ = get_space_shape(self.env.observation_space)
+        print("Environment initialized.")
+
+        if init:
+            tf.reset_default_graph()
+            self._init_graph()
+            print("Graph created.")
+
+        self.episode_counter = 0
+        self.step_counter = 0
+        self.done = True
+
+        self.eval_results = {
+            "total_episode_reward": np.zeros(n_episodes),
+            "mean_episode_reward": np.zeros(n_episodes),
+            "episode_length": np.zeros(n_episodes),
+        }
+
+        for ep in range(n_episodes):
+            self.state = np.asarray(self.env.reset(), dtype=np.float64)
+            self.episode_step_counter = 0
+            self.episode_reward = 0
+
+            for i in range(self.tmax):
+
+                # predict Q-values Q(s,a)
+                action_probabilities = self.session.run(
+                    self.action_probs,
+                    feed_dict={self.state_ph: np.reshape(self.state, (1, -1))}
+                )
+
+                # select and perform action
+                self.action = self.eval_policy.select_action(action_probabilities.reshape(-1))
+                new_state, self.reward, self.done, _ = self.env.step(self.action)
+
+                # bookkeeping
+                self.step_counter += 1
+                self.episode_reward += self.reward
+                self.episode_step_counter += 1
+                self.state = np.asarray(copy.copy(new_state), dtype=np.float64)
+
+                # end of episode
+                if self.done:
+                    break
+
+            self.eval_results["total_episode_reward"][ep] = self.episode_reward
+            self.eval_results["mean_episode_reward"][ep] = self.episode_reward / self.episode_step_counter
+            self.eval_results["episode_length"][ep] = self.episode_step_counter
+
+            print("\rCompleted episode {}/{}".format(ep, n_episodes), end="")
+
+        return self.eval_results
+
+    def get_config(self):
+        """Return configuration of the agent as a dictionary."""
+        config = {
+            "name": self.name,
+            "policy": self.policy.get_config(),
+            "beta": self.beta,
+            "gamma": self.gamma,
+            "td_lambda": self.td_steps,
+            "return_func": self.return_func,
+            "learning_rate": self.learning_rate,
+            "n_layers": self.model_params["n_layers"],
+            "n_neurons": self.model_params["n_neurons"],
+            "activation": self.model_params["activation"],
+            "logdir": self.logdir,
+            "gradient_clip": self.gradient_clip,
+            "max_queue_size": self.max_queue_size
+        }
