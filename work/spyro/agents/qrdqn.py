@@ -152,10 +152,6 @@ class QuantileRegressionDQNAgent(DQNAgent):
             self.summary_writer = tf.summary.FileWriter(self.logdir, self.session.graph)
 
         self.session.run(tf.global_variables_initializer())
-        print("Tensorflow graph trainable variables in online scope:")
-        print([v.name for v in tf.trainable_variables(scope=self.name + "/online")])
-        print("Tensorflow graph trainable variables in target scope:")
-        print([v.name for v in tf.trainable_variables(scope=self.name + "/target")])
 
     def get_config(self):
         """Return configuration of the agent as a dictionary."""
