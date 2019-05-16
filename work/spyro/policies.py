@@ -47,7 +47,7 @@ class FixedActionPolicy(BasePolicy):
         return self.action
 
     def get_config(self):
-        return {"action": self.action}
+        return {"name": self.name, "action": self.action}
 
 
 class RandomPolicy(BasePolicy):
@@ -99,7 +99,7 @@ class SoftmaxPolicy(BasePolicy):
 
     def get_config(self):
         """The softmax policy does not have any parameters."""
-        return {}
+        return {"name": self.name}
 
 
 class GreedyPolicy(BasePolicy):
@@ -109,6 +109,7 @@ class GreedyPolicy(BasePolicy):
     to the input. This policy is mostly used in value gradient techniques, but also
     works with for policy gradient methods by providing the probabilities as input.
     """
+    name = "GreedyPolicy"
 
     def select_action(self, scores):
         """Select the action with the highest score.
@@ -127,7 +128,7 @@ class GreedyPolicy(BasePolicy):
 
     def get_config(self):
         """The Greedy policy does not have any parameters."""
-        return {}
+        return {"name": self.name}
 
 
 class EpsilonGreedyPolicy(BasePolicy):
@@ -157,6 +158,7 @@ class EpsilonGreedyPolicy(BasePolicy):
         After how may time steps to perform the epsilon update steps defined by `decay_factor`
         or `decay_step`.
     """
+    name = "EpsilonGreedyPolicy"
 
     def __init__(self, start_epsilon, final_epsilon=0.0, steps_to_final_eps=1e6, decay=None):
         self.start_eps = start_epsilon
@@ -199,7 +201,8 @@ class EpsilonGreedyPolicy(BasePolicy):
 
     def get_config(self):
         """The Greedy policy does not have any parameters."""
-        return {"start_epsilon": self.start_eps,
+        return {"name": self.name,
+                "start_epsilon": self.start_eps,
                 "epsilon": self.eps,
                 "final_epsilon": self.final_eps,
                 "decay": self.decay,
