@@ -5,7 +5,7 @@ import tensorflow as tf
 
 from spyro.core import BaseAgent
 from spyro.builders import build_dqn
-from spyro.utils import obtain_env_information, make_env
+from spyro.utils import obtain_env_information, make_env, progress
 
 
 class DQNAgent(BaseAgent):
@@ -135,10 +135,6 @@ class DQNAgent(BaseAgent):
             self.summary_writer = tf.summary.FileWriter(self.logdir, self.session.graph)
 
         self.session.run(tf.global_variables_initializer())
-        print("Tensorflow graph trainable variables in online scope:")
-        print([v.name for v in tf.trainable_variables(scope=self.name + "/online")])
-        print("Tensorflow graph trainable variables in target scope:")
-        print([v.name for v in tf.trainable_variables(scope=self.name + "/target")])
 
     def fit(self, env_cls, total_steps=4e7, warmup_steps=10000, tmax=None, env_params=None, restart=True):
         """Train the agent on a given environment."""
@@ -255,7 +251,11 @@ class DQNAgent(BaseAgent):
         else:
             self.eval_policy = self.policy
 
-        self.tmax = tmax
+        if tmax is None:
+            self.tmax = 10000
+        else:
+            self.tmax = tmax
+
         self.env = make_env(env_cls, env_params)
         self.action_shape, self.n_actions, self.obs_shape, _ = \
                 obtain_env_information(env_cls, env_params)
@@ -305,7 +305,8 @@ class DQNAgent(BaseAgent):
             self.eval_results["mean_episode_reward"][ep] = self.episode_reward / self.episode_step_counter
             self.eval_results["episode_length"][ep] = self.episode_step_counter
 
-            print("\rCompleted episode {}/{}".format(ep, n_episodes), end="")
+            progress("Completed episode {}/{}".format(ep + 1, n_episodes),
+                     same_line=(ep > 0), newline_end=(ep + 1 == n_episodes))
 
         return self.eval_results
 

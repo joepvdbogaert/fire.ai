@@ -12,12 +12,20 @@ import queue
 import gym
 
 from spyro.core import BaseAgent
-from spyro.targets import (n_step_temporal_difference,
-                           monte_carlo_discounted_mean_reward,
-                           n_step_discounted_mean_reward)
-
-from spyro.utils import find_free_numbered_subdir, make_env, obtain_env_information, get_space_shape
 from spyro.builders import build_actor_critic_mlp
+from spyro.targets import (
+    n_step_temporal_difference,
+    monte_carlo_discounted_mean_reward,
+    n_step_discounted_mean_reward
+)
+
+from spyro.utils import (
+    find_free_numbered_subdir,
+    make_env,
+    obtain_env_information,
+    get_space_shape,
+    progress
+)
 
 
 class A3CWorker(mp.Process):
@@ -379,7 +387,7 @@ class A3CAgent(BaseAgent):
         }
     }
 
-    def __init__(self, policy, name="A3C_Global_Agent", beta=0.05, returns="mc_mean", td_steps=10,
+    def __init__(self, policy, name="A3C_Agent", beta=0.05, returns="mc_mean", td_steps=10,
                  n_layers=3, n_neurons=512, activation="relu", max_queue_size=10,
                  *args, **kwargs):
 
@@ -643,7 +651,8 @@ class A3CAgent(BaseAgent):
             self.eval_results["mean_episode_reward"][ep] = self.episode_reward / self.episode_step_counter
             self.eval_results["episode_length"][ep] = self.episode_step_counter
 
-            print("\rCompleted episode {}/{}".format(ep, n_episodes), end="")
+            progress("Completed episode {}/{}".format(ep + 1, n_episodes),
+                     same_line=(ep > 0), newline_end=(ep + 1 == n_episodes))
 
         return self.eval_results
 
@@ -664,3 +673,4 @@ class A3CAgent(BaseAgent):
             "gradient_clip": self.gradient_clip,
             "max_queue_size": self.max_queue_size
         }
+        return config
