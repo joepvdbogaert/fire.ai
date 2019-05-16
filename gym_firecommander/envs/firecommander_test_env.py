@@ -15,7 +15,8 @@ class FireCommanderTestEnv(FireCommanderEnv):
             self.load_test_episodes(path=path)
 
         if test_episodes is not None:
-            self.test_episodes = test_episodes
+            self.test_episodes = copy.deepcopy(test_episodes)
+            del test_episodes
             self.reset_test_episodes()
 
         super().__init__(*args, **kwargs)
@@ -208,6 +209,11 @@ class FireCommanderTestEnv(FireCommanderEnv):
         """Return the concatenated log of test episodes."""
         concat_log = np.concatenate(
             [np.append(d["log"], np.ones((len(d["log"]), 1)) * key, axis=1)
-             for key, d in self.data.items()]
+             for key, d in self.data.items() if key < self.ep]
         )
-        return pd.DataFrame(concat_log, columns=self.sim.log_columns + ["episode"])
+
+        df = pd.DataFrame(concat_log, columns=self.sim.log_columns + ["episode"])
+        for col in ["t", "dispatch_time", "turnout_time", "travel_time",
+                    "on_scene_time", "response_time", "target", "episode"]:
+            df[col] = df[col].astype(np.float)
+        return df
