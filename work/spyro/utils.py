@@ -1,5 +1,6 @@
 import os
 import gym
+import time
 import numpy as np
 
 
@@ -105,3 +106,9 @@ def obtain_env_information(env_cls, env_params):
     obs_shape, obs_n = get_space_shape(observation_space)
 
     return action_shape, action_n, obs_shape, obs_n
+
+
+def progress(text, verbose=True, same_line=False, newline_end=True):
+    if verbose:
+        print("{}[{}] {}".format("\r" if same_line else "", time.strftime("%Y-%m-%d %H:%M:%S"),
+                                 text), end="\n" if newline_end else "")
