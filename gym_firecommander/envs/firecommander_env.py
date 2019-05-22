@@ -91,7 +91,7 @@ class FireCommanderEnv(gym.Env):
         Returns
         -------
         new_observation, reward, is_done, info: tuple
-            new_observation: a gym.space
+            new_observation: np.array
                 The next state after taking a step.
             reward: float
                 The immediate reward for the current step.
@@ -176,6 +176,7 @@ class FireCommanderEnv(gym.Env):
             sim = pickle.load(fd)
         sim.rsampler._create_response_time_generators()
         sim.isampler.reset_time()
+        sim.big_sampler._create_big_incident_generator()
         sim.set_max_target(sim.max_target)
         # filter to only TS vehicles
         rs = sim.resource_allocation.copy()
@@ -192,7 +193,7 @@ class FireCommanderEnv(gym.Env):
 
     def _get_available_vehicles(self):
         stations, counts = np.unique([v.current_station_name for v in self.sim.vehicles.values()
-                                      if v.available and v.type=="TS"], return_counts=True)
+                                      if v.available and (v.type == "TS")], return_counts=True)
         vehicles = np.zeros(len(self.station_names), dtype=np.int16)
         vehicles[np.in1d(self.station_names, stations)] = counts
         return vehicles
