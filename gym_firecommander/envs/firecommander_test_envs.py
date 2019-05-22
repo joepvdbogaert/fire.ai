@@ -3,13 +3,15 @@ import copy
 import numpy as np
 import pandas as pd
 
-from gym_firecommander.envs import FireCommanderEnv
+from abc import ABCMeta, abstractmethod
+
+from gym_firecommander.envs import FireCommanderEnv, FireCommanderBigEnv
 
 
-class FireCommanderTestEnv(FireCommanderEnv):
-    """A version of Fire Commander for evaluating agents on pre-simulated data."""
+class BaseTestEnv(object):
+    __metaclass__ = ABCMeta
 
-    def __init__(self, load=False, path=None, test_episodes=None, *args, **kwargs):
+    def __init__(self, load=False, path=None, test_episodes=None):
         if load:
             assert path is not None, "path must be given if load=True"
             self.load_test_episodes(path=path)
@@ -19,51 +21,9 @@ class FireCommanderTestEnv(FireCommanderEnv):
             del test_episodes
             self.reset_test_episodes()
 
-        super().__init__(*args, **kwargs)
-
-    def create_test_episodes(self, n_episodes, episode_threshold=None):
-        """Create a suite of episodes to evaluate agents on."""
-        # load simulator to ensure fresh start
-        self._load_simulator()
-        self.sim.initialize_without_simulating()
-
-        # take own episode threshold if none is given
-        if episode_threshold is not None:
-            self.episode_threshold = episode_threshold
-
-        # store episodes in dictionary
-        self.test_episodes = {}
-
-        # keep track of number of episodes
-        ep_counter = 0
-        while ep_counter < n_episodes:
-            
-            while not self._check_episode_start_condition():
-                self._simulate()
-
-            # start condition is met: gather current state information
-            self.is_done = False
-            self.state, _ = self._extract_state()
-            snapshot = self.get_snapshot()
-            start_idx = self.sim.log_index
-
-            while not self._check_episode_end_condition():
-                # simulate a single incident and all its deployments and log to sim.log
-                self.sim.simulate_single_incident()
-
-            # end condition is met: gather simulated data
-            sim_log = self.sim.log[start_idx:self.sim.log_index, :]
-            sim_log = sim_log[sim_log[:, 6] == "TS"]
-
-            # save only if log is not empty (can be empty if there were no TS responses)
-            if len(sim_log) > 0:
-                self.test_episodes[ep_counter] = {
-                    "snapshot": copy.deepcopy(snapshot),
-                    "log": sim_log
-                }
-
-                print("\rCreated episode {}/{}".format(ep_counter + 1, n_episodes), end="")
-                ep_counter += 1
+    @abstractmethod
+    def create_test_episodes(self, n_episodes):
+        """Create a set of test episodes."""
 
     def get_test_episodes(self):
         assert hasattr(self, "test_episodes"), "First run 'create_test_episodes' or 'load_test_episodes'"
@@ -99,7 +59,7 @@ class FireCommanderTestEnv(FireCommanderEnv):
         Returns
         -------
         new_observation, reward, is_done, info: tuple
-            new_observation: a gym.space
+            new_observation: np.array
                 The next state after taking a step.
             reward: float
                 The immediate reward for the current step.
@@ -110,20 +70,20 @@ class FireCommanderTestEnv(FireCommanderEnv):
         """
         # check if suggested action is valid
         valid = self._take_action(action)
+        self.last_action = action if self.action_type == "tuple" else self.action_num_to_tuple[action]
+
+        response, target = self._simulate_from_data()
+
         if not valid:
-            _, _ = self._simulate_from_data()
             response = self.worst_response
             target = 6*60
-        else:
-            response, target = self._simulate_from_data()
-            if np.isnan(target):  # prio 2 or 3 incident: no target exists
-                target = response
+                
+        elif np.isnan(target):  # prio 2 or 3 incident: no target exists
+            target = response
 
-        self.last_action = action if self.action_type == "tuple" else self.action_num_to_tuple[action]
         # calculate reward and new state
         self.reward = self._get_reward(response, target, valid=valid)
         self.state, _ = self._extract_state()
-        # self.render()
         return self.state, self.reward, self.is_done, {"note": "nothing to report"}
 
     def reset(self):
@@ -217,3 +177,135 @@ class FireCommanderTestEnv(FireCommanderEnv):
                     "on_scene_time", "response_time", "target", "episode"]:
             df[col] = df[col].astype(np.float)
         return df
+
+
+class FireCommanderTestEnv(BaseTestEnv, FireCommanderEnv):
+    """A version of Fire Commander for evaluating agents on pre-simulated data.
+
+    Parameters
+    ----------
+    load: bool, default=False
+        Whether to load pre-simulated test episodes.
+    path: str, default=None
+        The path to the test episodes when load=True. Ignored if load=False.
+    test_episodes: dict, default=None
+        Dictionairy of test episodes. If provided, these episodes will be used
+        in evaluation, so no new episodes have to be loaded or simulated.
+    *args, **kwargs: any
+        Parameters to pass to FireCommanderEnv, defining the actual environment.
+    """
+
+    def __init__(self, load=False, path=None, test_episodes=None, *args, **kwargs):
+        BaseTestEnv.__init__(self, load=load, path=path, test_episodes=test_episodes)
+        FireCommanderEnv.__init__(self, *args, **kwargs)
+
+    def create_test_episodes(self, n_episodes, episode_threshold=None):
+        """Create a suite of episodes to evaluate agents on."""
+        # load simulator to ensure fresh start
+        self._load_simulator()
+        self.sim.initialize_without_simulating()
+
+        # take own episode threshold if none is given
+        if episode_threshold is not None:
+            self.episode_threshold = episode_threshold
+
+        # store episodes in dictionary
+        self.test_episodes = {}
+
+        # keep track of number of episodes
+        ep_counter = 0
+        while ep_counter < n_episodes:
+            
+            while not self._check_episode_start_condition():
+                self._simulate()
+
+            # start condition is met: gather current state information
+            self.is_done = False
+            self.state, _ = self._extract_state()
+            snapshot = self.get_snapshot()
+            start_idx = self.sim.log_index
+
+            while not self._check_episode_end_condition():
+                # simulate a single incident and all its deployments and log to sim.log
+                self.sim.simulate_single_incident()
+
+            # end condition is met: gather simulated data
+            sim_log = self.sim.log[start_idx:self.sim.log_index, :]
+            sim_log = sim_log[sim_log[:, 6] == "TS"]
+
+            # save only if log is not empty (can be empty if there were no TS responses)
+            if len(sim_log) > 0:
+                self.test_episodes[ep_counter] = {
+                    "snapshot": copy.deepcopy(snapshot),
+                    "log": sim_log
+                }
+
+                print("\rCreated episode {}/{}".format(ep_counter + 1, n_episodes), end="")
+                ep_counter += 1
+
+
+class FireCommanderBigTestEnv(BaseTestEnv, FireCommanderBigEnv):
+    """A version of Fire Commander Big for evaluating agents on pre-simulated data.
+
+    Parameters
+    ----------
+    load: bool, default=False
+        Whether to load pre-simulated test episodes.
+    path: str, default=None
+        The path to the test episodes when load=True. Ignored if load=False.
+    test_episodes: dict, default=None
+        Dictionairy of test episodes. If provided, these episodes will be used
+        in evaluation, so no new episodes have to be loaded or simulated.
+    *args, **kwargs: any
+        Parameters to pass to FireCommanderBigEnv, defining the actual environment.
+    """
+    def __init__(self, load=False, path=None, test_episodes=None, *args, **kwargs):
+        BaseTestEnv.__init__(self, load=load, path=path, test_episodes=test_episodes)
+        FireCommanderBigEnv.__init__(self, *args, **kwargs)
+
+    def create_test_episodes(self, n_episodes):
+        """Create a suite of episodes to evaluate agents on.
+
+        Parameters
+        ----------
+        n_episodes: int
+            The number of episodes the test set must consist of.
+        """
+        # load simulator to ensure fresh start
+        self._load_simulator()
+
+        # store episodes in dictionary
+        self.test_episodes = {}
+
+        # keep track of number of episodes
+        ep_counter = 0
+        while ep_counter < n_episodes:
+            
+            # what normally is done in reset env
+            self.sim.simulate_big_incident()
+            self.t_episode_end = self.sim.log[0, 11:13].sum() / 60
+            self.time = self.sim.log[0, 1]
+            self.state, self.is_done = self._extract_state()
+
+            # plus additional data we need about our starting point
+            snapshot = self.get_snapshot()
+            start_idx = self.sim.log_index
+
+            while not self._check_episode_end_condition():
+                # simulate a single incident and all its deployments and log to sim.log
+                self.sim.simulate_single_incident()
+
+            # end condition is met: gather simulated data
+            sim_log = self.sim.log[start_idx:self.sim.log_index, :]
+            sim_log = sim_log[sim_log[:, 6] == "TS"]
+
+            # save only if log is not empty (can be empty if there were no TS responses
+            # during the time of the incident)
+            if len(sim_log) > 0:
+                self.test_episodes[ep_counter] = {
+                    "snapshot": copy.deepcopy(snapshot),
+                    "log": sim_log
+                }
+
+                print("\rCreated episode {}/{}".format(ep_counter + 1, n_episodes), end="")
+                ep_counter += 1
