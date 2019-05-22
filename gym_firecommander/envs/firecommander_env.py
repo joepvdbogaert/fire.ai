@@ -1,4 +1,3 @@
-import os
 import gym
 import pickle
 import copy
