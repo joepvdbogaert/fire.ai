@@ -1,11 +1,6 @@
-import os
-import gym
-import pickle
-import copy
 import numpy as np
 
 from fdsim.simulation import Simulator
-
 from gym_firecommander.envs import FireCommanderEnv
 
 
@@ -104,8 +99,7 @@ class FireCommanderBigEnv(FireCommanderEnv):
                 vehicle, estimated_time = self.sim._pick_vehicle(loc, v)
                 if vehicle is None:
                     turnout, travel, onscene, response = [np.nan]*4
-                    self.sim._log([self.sim.t, self.time, type_, loc, prio, func, v, "EXTERNAL", dispatch,
-                                   turnout, travel, onscene, response, target, "EXTERNAL", "EXTERNAL", "EXTERNAL"])
+
                 else:
                     vehicle.assign_crew()
 
@@ -115,9 +109,6 @@ class FireCommanderBigEnv(FireCommanderEnv):
 
                     response = dispatch + turnout + travel
                     vehicle.dispatch(dest, self.sim.t + (response + onscene + estimated_time) / 60)
-                    self.sim._log([self.sim.t, self.time, type_, loc, prio, func, vehicle.type, vehicle.id,
-                               dispatch, turnout, travel, onscene, response, target,
-                               vehicle.current_station_name, vehicle.base_station_name, vehicle.current_crew])
 
                 # we must return a numerical value
                 if np.isnan(response):
