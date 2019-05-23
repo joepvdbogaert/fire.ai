@@ -186,7 +186,7 @@ class FireCommanderEnv(gym.Env):
     def _extract_state(self):
         state = np.concatenate([
             self._get_available_vehicles(),
-            np.array([self.time.weekday(), np.array(self.time.hour)])
+            np.array([self.time.weekday() / 6, np.array(self.time.hour) / 23])
         ])
         return state, self._check_episode_end_condition()
 
