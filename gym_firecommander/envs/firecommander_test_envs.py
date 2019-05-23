@@ -262,6 +262,7 @@ class FireCommanderBigTestEnv(BaseTestEnv, FireCommanderBigEnv):
     def __init__(self, load=False, path=None, test_episodes=None, *args, **kwargs):
         BaseTestEnv.__init__(self, load=load, path=path, test_episodes=test_episodes)
         FireCommanderBigEnv.__init__(self, *args, **kwargs)
+        self.t_episode_end = 1000  # attribute needs to exist, value is not used in evaluation
 
     def create_test_episodes(self, n_episodes):
         """Create a suite of episodes to evaluate agents on.
