@@ -9,10 +9,69 @@ from spyro.utils import obtain_env_information, make_env, progress
 
 
 class DQNAgent(BaseAgent):
+    """Agent that implements Deep Q-Networks (Mnih et al., 2015).
 
+    Parameters
+    ----------
+    policy: an implementation of spyro.policies.BasePolicy
+        The action-selection or exploration-exploitation policy. This must be an initialized
+        object.
+    memory: an implementation of spyro.memory.BaseMemory
+        The replay buffer to store experience tuples in and sample from for training. Must
+        be initialized.
+    use_target_network: bool, default=True
+        Whether to use a target network to predict the update targets.
+    double_dqn: bool, default=True
+        Whether to use Double DQN (Hasselt et al., 2016); predict the next action using the online network, but the
+        value of the next action with the target network. This is used to reduce the
+        maximization bias in Q-learning.
+    dueling_dqn: bool, defualt=True
+        Whether to use dueling network architectures as proposed by Wang et al (2015).
+    batch_size: int, default=32
+        The batch size to use for training the network.
+    tau: float or int, default=0.02
+        When ;math:`\\tau < 1`, this is the parameters of the soft-update of the target weights
+        so that :math:`\\theta^- = \tau \\theta + (1 - \tau)\\theta^-`. When :math:`\\tau >= 1`
+        it represents the number of steps between hard-updates of the target weights.
+    train_frequency: int, default=1
+        The number of steps in the environment between training steps of the network. If 1,
+        trains after every step.
+    td_lambda: int, optional default=0
+        The number of steps to incorporate explicitly in the return calculation, i.e., the 'n'
+        in the n-step Temporal Difference update.    
+    n_layers: int, optional, default=3
+        The number of hidden layers to use in the neural network architecture.
+    n_neurons: int, optional, default=512
+        The number of neurons to use per hidden layer in the neural network.
+    activation: str or tensorflow callable, default="adam"
+        The activation function to use for hidden layers in the neural network.
+    value_neurons: int, default=64
+        The number of neurons to use in the hidden layer of the value stream when
+        dueling_dqn=True.
+    advantage_neurons: int, default=256
+        The number of neurons to use in the hidden layer of the advantage stream when
+        dueling_dqn=True.
+    name: str, optional, default="DQN_Agent"
+        The name of the agent, which is used to define its variable scope in the Tensorflow
+        graph to avoid mix-ups with other tensorflow activities.
+    learning_rate: float, optional, default=1e-3
+        The learning rate of the RMSProp optimizer.
+    gamma: float, optional, default=0.9
+        The discount factor for future rewards. At time :math:`t`, the reward :math:`r_{t + i}`
+        is discounted by :math:`\\gamma^i` in the return calculation of :math:`t`, for all
+        :math:`i = 1, ..., td_steps`.
+    *args, **kwargs: any
+        Any parameters that should be passed to spyro.agents.BaseAgent.
+
+    References
+    ---------- 
+    [Hasselt et al. (2016)](https://arxiv.org/abs/1509.06461)
+    [Mnih et al. (2015)](http://dx.doi.org/10.1038/nature14236)
+    [Wang et al. (2015)](http://arxiv.org/abs/1511.06581)
+    """
     def __init__(self, policy, memory, use_target_network=True, double_dqn=True, dueling_dqn=True, batch_size=32,
-                 tau=0.5, train_frequency=4, td_lambda=0, n_layers=2, n_neurons=512, activation="relu",
-                 value_neurons=64, advantage_neurons=256, optimization="sgd", name="DQN_Agent", *args, **kwargs):
+                 tau=0.02, train_frequency=1, td_lambda=0, n_layers=2, n_neurons=512, activation="relu",
+                 value_neurons=64, advantage_neurons=256, optimization="adam", name="DQN_Agent", *args, **kwargs):
 
         self.name = name
 
@@ -137,8 +196,29 @@ class DQNAgent(BaseAgent):
         self.session.run(tf.global_variables_initializer())
 
     def fit(self, env_cls, total_steps=4e7, warmup_steps=10000, tmax=None, env_params=None, restart=True):
-        """Train the agent on a given environment."""
+        """Train the agent on a given environment.
 
+        Parameters
+        ----------
+        env_cls: uninitialized Python class or str
+            The environment to train on. If a class is provided, it must be uninitialized.
+            Parameters can be passed to the environment using env_params. If a string
+            is provided, this string is fed to `gym.make()` to create the environment.
+        total_steps: int, optional, default=50,000
+            The total number of training steps.
+        warmup_steps: int, default=10000
+            The number of steps to take in the environment before starting to train the
+            network. This is used to build up a replay buffer with varying experiences
+            to ensure uncorrelated samples from the start of training.
+        tmax: int, optional, default=32
+            The maximum number of steps to run in a single trial if the episode is not
+            over earlier. After tmax steps, all end-of-episode tasks will be performed.
+        env_params: dict, optional, default=None
+            Dictionary of parameter values to pass to `env_cls` upon initialization.
+        restart: boolean, default=True
+            Whether to (re-)initialize the network (True) or to keep the current neural
+            network parameters (False).
+        """
         self.warmup_steps = warmup_steps
         self.tmax = tmax
         self.env = make_env(env_cls, env_params)
@@ -223,9 +303,15 @@ class DQNAgent(BaseAgent):
         self.summary_writer.add_summary(episode_summary, self.episode_counter)
 
     def hard_update_target_network(self):
+        """Sets the weights of the target network equal to the weights of the
+        current online network.
+        """
         self.session.run(self.hard_update_ops)
 
     def soft_update_target_network(self):
+        """Moves the weights of the target network towards the weights of the online
+        network by linearly interpolating between the two for every variable.
+        """
         self.session.run(self.soft_update_ops)
 
     def train(self):
@@ -245,7 +331,27 @@ class DQNAgent(BaseAgent):
         self.summary_writer.add_summary(step_summ, self.step_counter)
 
     def evaluate(self, env_cls, n_episodes=10000, tmax=None, policy=None, env_params=None, init=False):
-        """Evaluate the agent on an environemt without training."""
+        """Evaluate the agent on an environemt without training.
+
+        Parameters
+        ----------
+        env_cls: uninitialized Python class or str
+            The environment to train on. If a class is provided, it must be uninitialized.
+            Parameters can be passed to the environment using env_params. If a string
+            is provided, this string is fed to `gym.make()` to create the environment.
+        n_episodes: int, optional, default=10,000
+            The number of episodes to run.
+        tmax: int, optional, default=None
+            The maximum number of steps to run in each episode. If None, set to 10,000 to
+            not enforce a limit in most environments.
+        policy: spyro.policies instance, default=None
+            The policy to use during evaluation if it is not the same as during training.
+        env_params: dict, optional, default=None
+            Dictionary of parameter values to pass to `env_cls` upon initialization.
+        init: boolean, default=False
+            Whether to (re-)initialize the network (True) or to keep the current neural
+            network parameters (False).
+        """
         if policy is not None:
             self.eval_policy = policy
         else:
