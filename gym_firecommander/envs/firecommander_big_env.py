@@ -5,7 +5,6 @@ from gym_firecommander.envs import FireCommanderEnv
 
 
 class FireCommanderBigEnv(FireCommanderEnv):
-    metadata = {'render.modes': ['human']}
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
