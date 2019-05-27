@@ -11,7 +11,7 @@ from fdsim.simulation import Simulator
 from gym_firecommander.rewards import (
     binary_reward, response_time_penalty, linear_lateness_penalty,
     squared_lateness_penalty, tanh_reward, on_time_plus_minus_one,
-    spare_time
+    spare_time, scaled_spare_time
 )
 
 
@@ -28,7 +28,7 @@ class FireCommanderEnv(gym.Env):
     metadata = {'render.modes': ['human'],
                 'reward_functions': ['binary_reward', 'response_time_penalty', 'tanh_reward',
                                      'linear_lateness_penalty', 'squared_lateness_penalty',
-                                     'plus_minus_one', 'spare_time'],
+                                     'plus_minus_one', 'spare_time', 'scaled_spare_time'],
                 'action_types': ['num', 'tuple', 'multi', 'set_1']}
 
     def __init__(self, reward_func='response_time_penalty', worst_response=25*60, action_type="set_1",
@@ -236,6 +236,8 @@ class FireCommanderEnv(gym.Env):
             self._get_reward = on_time_plus_minus_one
         elif reward_func == "spare_time":
             self._get_reward = spare_time
+        elif reward_func == "scaled_spare_time":
+            self._get_reward = scaled_spare_time
         else:
             raise ValueError("'reward' must be one of {}. Received {}".format(
                              self.metadata['reward_functions'], reward_func))

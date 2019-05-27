@@ -29,3 +29,6 @@ def on_time_plus_minus_one(response_time, target, valid=True, invalid_reward=-5)
 
 def spare_time(response_time, target, valid=True):
     return target - response_time if valid else -2000
+
+def scaled_spare_time(response_time, target, valid=True):
+    return (target - response_time) / 300
