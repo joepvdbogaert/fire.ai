@@ -5,21 +5,21 @@ import pandas as pd
 
 from abc import ABCMeta, abstractmethod
 
-from gym_firecommander.envs import FireCommanderEnv, FireCommanderBigEnv
+from gym_firecommander.envs import FireCommanderEnv, FireCommanderBigEnv, FireCommanderV2
 
 
 class BaseTestEnv(object):
     __metaclass__ = ABCMeta
 
     def __init__(self, load=False, path=None, test_episodes=None):
-        if load:
-            assert path is not None, "path must be given if load=True"
-            self.load_test_episodes(path=path)
-
         if test_episodes is not None:
             self.test_episodes = copy.deepcopy(test_episodes)
             del test_episodes
             self.reset_test_episodes()
+
+        elif load:
+            assert path is not None, "path must be given if load=True"
+            self.load_test_episodes(path=path)
 
     @abstractmethod
     def create_test_episodes(self, n_episodes):
@@ -158,7 +158,7 @@ class BaseTestEnv(object):
         # increment the row in the log / multiple steps to the next incident
         # and indicate whether the end of the episode is reached.
         self.log_row += len(onscene_times)
-        if self.log_row == len(self.current_log):
+        if self.log_row >= len(self.current_log):
             self.is_done = True
         else:
             self.is_done = False
@@ -243,6 +243,8 @@ class FireCommanderTestEnv(BaseTestEnv, FireCommanderEnv):
                 print("\rCreated episode {}/{}".format(ep_counter + 1, n_episodes), end="")
                 ep_counter += 1
 
+        self.reset_test_episodes()
+
 
 class FireCommanderBigTestEnv(BaseTestEnv, FireCommanderBigEnv):
     """A version of Fire Commander Big for evaluating agents on pre-simulated data.
@@ -298,7 +300,7 @@ class FireCommanderBigTestEnv(BaseTestEnv, FireCommanderBigEnv):
 
             # end condition is met: gather simulated data
             sim_log = self.sim.log[start_idx:self.sim.log_index, :]
-            sim_log = sim_log[sim_log[:, 6] == "TS"]
+            sim_log = sim_log[(sim_log[:, 6] == "TS")  & (sim_log[:, 0] <= self.t_episode_end)]
 
             # save only if log is not empty (can be empty if there were no TS responses
             # during the time of the incident)
@@ -310,3 +312,136 @@ class FireCommanderBigTestEnv(BaseTestEnv, FireCommanderBigEnv):
 
                 print("\rCreated episode {}/{}".format(ep_counter + 1, n_episodes), end="")
                 ep_counter += 1
+
+        self.reset_test_episodes()
+
+
+class FireCommanderV2TestEnv(BaseTestEnv, FireCommanderV2):
+    """A version of FireCommanderV2 for evaluating agents on pre-simulated data.
+
+    Parameters
+    ----------
+    load: bool, default=False
+        Whether to load pre-simulated test episodes.
+    path: str, default=None
+        The path to the test episodes when load=True. Ignored if load=False.
+    test_episodes: dict, default=None
+        Dictionairy of test episodes. If provided, these episodes will be used
+        in evaluation, so no new episodes have to be loaded or simulated.
+    *args, **kwargs: any
+        Parameters to pass to FireCommanderBigEnv, defining the actual environment.
+    """
+    def __init__(self, load=False, path=None, test_episodes=None, *args, **kwargs):
+        BaseTestEnv.__init__(self, load=load, path=path, test_episodes=test_episodes)
+        FireCommanderV2.__init__(self, *args, **kwargs)
+        # self.t_episode_end = 1000  # attribute needs to exist, value is not used in evaluation
+
+    # TODO: refactor so that this doesn't need to be copied from FireCommanderBigEnv
+    def create_test_episodes(self, n_episodes):
+        """Create a suite of episodes to evaluate agents on.
+
+        Parameters
+        ----------
+        n_episodes: int
+            The number of episodes the test set must consist of.
+        """
+        # load simulator to ensure fresh start
+        self._load_simulator()
+
+        # store episodes in dictionary
+        self.test_episodes = {}
+
+        # keep track of number of episodes
+        ep_counter = 0
+        while ep_counter < n_episodes:
+
+            # what normally is done in reset env
+            self.sim.simulate_big_incident()
+            self.t_episode_end = self.sim.log[0, 11:13].sum() / 60
+            self.time = self.sim.log[0, 1]
+            self.destination_candidates, vehicles = self._get_empty_stations()
+            self.current_dest = self.destination_candidates.pop(0)
+            self.state, self.is_done = self._extract_state(vehicles)
+            assert self.is_done == False, "This should be false after simulating big incident."
+
+            # plus additional data we need about our starting point
+            snapshot = self.get_snapshot()
+            start_idx = self.sim.log_index
+
+            while not self._check_episode_end_condition():
+                # simulate a single incident and all its deployments and log to sim.log
+                self.sim.simulate_single_incident()
+
+            # end condition is met: gather simulated data
+            sim_log = self.sim.log[start_idx:self.sim.log_index, :]
+            sim_log = sim_log[(sim_log[:, 6] == "TS") & (sim_log[:, 0] <= self.t_episode_end)]
+
+            # save only if log is not empty (can be empty if there were no TS responses
+            # during the time of the incident)
+            if len(sim_log) > 0:
+                self.test_episodes[ep_counter] = {
+                    "snapshot": snapshot,
+                    "log": sim_log
+                }
+
+                print("\rCreated episode {}/{}".format(ep_counter + 1, n_episodes), end="")
+                ep_counter += 1
+
+        self.reset_test_episodes()
+
+    def step(self, action):
+        """Take one step in the environment and give back the results.
+
+        This step is used when simulating from data, not when creating test episodes.
+
+        Parameters
+        ----------
+        action: tuple(int, int)
+            The action to take as combination of (origin, destination).
+
+        Returns
+        -------
+        new_observation, reward, is_done, info: tuple
+            new_observation: np.array
+                The next state after taking a step.
+            reward: float
+                The immediate reward for the current step.
+            is_done: boolean
+                True if the episode is finished, False otherwise.
+            info: dict
+                Possible additional info about what happened.
+        """
+        valid = self._take_action(action)
+        self.last_action = (None, None) if action == self.num_stations else \
+                (action, self.current_dest)
+
+        # go to next incident if all destinations have been decided on, o/w simulate until
+        # empty stations are available (it is possible to relocate such that no stations
+        # are empty)
+        self.reward = 0.0
+        while len(self.destination_candidates) == 0:
+
+            # simulate until TS response needed
+            response, target = self._simulate_from_data()
+            if np.isnan(target):
+                target = response
+
+            self.reward += self._get_reward(response, target, valid=valid)
+            self.destination_candidates, vehicles_per_station = self._get_empty_stations()
+            # break if this was the last incident in the log, otherwise, simulate next incident
+            # if there are no empty stations after this incident
+            if self.is_done:
+                break
+        else:
+            vehicles_per_station = self._get_available_vehicles()
+
+        if not valid:
+            self.reward = self._get_reward(self.worst_response, 6 * 60, valid=valid)
+
+        # obtain the state with the next destination
+        if not self.is_done:
+            self.current_dest = self.destination_candidates.pop(0)
+        self.state, _ = self._extract_state(vehicles_per_station)
+
+        return self.state, self.reward, self.is_done, \
+                {"last_action": self.last_action, "valid": valid}
