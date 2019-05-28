@@ -40,6 +40,12 @@ AGENT_MAP = {
 }
 
 
+LOG_COLUMNS = ["t", "time", "incident_type", "location", "priority",
+               "object_function", "vehicle_type", "vehicle_id", "dispatch_time",
+               "turnout_time", "travel_time", "on_scene_time", "response_time",
+               "target", "station", "base_station_of_vehicle", "crew_type"]
+
+
 def init_agent_from_config(config_path, force_no_log=False):
     """Initialize an agent based on a config file from a previous run.
 
@@ -148,10 +154,11 @@ def evaluate_saved_agent(dirpath, env_cls, n_episodes=100000, tmax=1000, policy=
     progress("Start test run on {} episodes.".format(n_episodes))
     results = agent.evaluate(env_cls, n_episodes=n_episodes, tmax=tmax, policy=policy, env_params=env_params)
 
+    test_log = agent.env.get_test_log()
+
     if save:
         progress("Saving results to {}.".format(dirpath))
         pickle.dump(results, open(os.path.join(dirpath, "test_results_dict.pkl"), "wb"))
-        test_log = agent.env.get_test_log()
         test_log.to_csv(os.path.join(dirpath, "test_log.csv"), index=False)
 
     if evaluator is not None:
@@ -169,3 +176,35 @@ def print_test_summary(summary):
     for name, data in summary.items():
         print("\n{}\n-----------------".format(name))
         print(data.T, end="\n\n")
+
+
+def load_test_log(dirpath):
+    """Load the test log from an agent's log directory.
+
+    Parameters
+    ----------
+    dirpath: str
+        The path to the agent's log directory.
+
+    Returns
+    -------
+    log: pd.DataFrame
+        The simulation log of the agent ran on the test episodes.
+    """
+    return pd.read_csv(os.path.join(dirpath, "test_log.csv"))
+
+
+def construct_test_log_from_episodes(test_episodes, log_columns=LOG_COLUMNS):
+    """Reconstruct a single simulation log from separate test episodes."""
+    concat_log = np.concatenate(
+        [np.append(d["log"], np.ones((len(d["log"]), 1)) * key, axis=1)
+         for key, d in test_episodes.items()]
+    )
+
+    df = pd.DataFrame(concat_log, columns=log_columns + ["episode"])
+
+    for col in ["t", "dispatch_time", "turnout_time", "travel_time",
+                "on_scene_time", "response_time", "target", "episode"]:
+        df[col] = df[col].astype(np.float)
+
+    return df
