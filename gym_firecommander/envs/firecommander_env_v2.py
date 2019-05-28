@@ -1,3 +1,4 @@
+import copy
 import numpy as np
 import gym
 
@@ -166,3 +167,45 @@ class FireCommanderV2(FireCommanderBigEnv):
         """
         vehicles = self._get_available_vehicles()
         return np.flatnonzero(vehicles == 0).tolist(), vehicles
+
+    def get_snapshot(self):
+        """Retrieve data from the environment in order to return to its current state
+        later. Does not include random states, so simulated output will change upon return.
+
+        Returns
+        -------
+        data: dict
+            Various parameters describing the current state of the system. Can be used as
+            input for `FireCommanderEnv.set_snapshot()` to return to this state.
+        """
+        data = {
+            "t": self.sim.t,
+            "time": self.time,
+            "t_episode_end": self.t_episode_end,
+            "current_dest": self.current_dest,
+            "destination_candidates": self.destination_candidates,
+            "vehicles": self.sim.vehicles,
+            "stations": self.sim.stations,
+            "state": self.state,
+            "done": self.is_done}
+        return copy.deepcopy(data)
+
+    def set_snapshot(self, data):
+        """Set the environment back to an earlier retrieved snapshot.
+
+        Parameters
+        ----------
+        data: dict
+            Output of `FireCommanderEnv.get_snapshot()`.
+        """
+        self.sim.t = data["t"]
+        self.time = data["time"]
+        self.t_episode_end = data["t_episode_end"]
+        self.current_dest = data["current_dest"]
+        self.destination_candidates = data["destination_candidates"]
+        self.sim.vehicles = data["vehicles"]
+        self.sim.stations = data["stations"]
+        self.state = data["state"]
+        self.is_done = data["done"]
+        self.sim._add_base_stations_to_vehicles()
+        self.sim.set_max_target(self.sim.max_target)
