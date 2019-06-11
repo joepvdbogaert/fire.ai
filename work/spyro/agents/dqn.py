@@ -293,14 +293,15 @@ class DQNAgent(BaseAgent):
             if self.done:
                 break
 
-        episode_summary = self.session.run(
-            self.episode_summary,
-            feed_dict={
-                self.total_reward: self.episode_reward,
-                self.mean_reward: self.episode_reward / self.episode_step_counter
-            }
-        )
-        self.summary_writer.add_summary(episode_summary, self.episode_counter)
+        if self.log:
+            episode_summary = self.session.run(
+                self.episode_summary,
+                feed_dict={
+                    self.total_reward: self.episode_reward,
+                    self.mean_reward: self.episode_reward / self.episode_step_counter
+                }
+            )
+            self.summary_writer.add_summary(episode_summary, self.episode_counter)
 
     def hard_update_target_network(self):
         """Sets the weights of the target network equal to the weights of the
@@ -318,17 +319,29 @@ class DQNAgent(BaseAgent):
         """Perform a train step using a batch sampled from memory."""
         states, actions, rewards, next_states, dones = self.memory.sample(batch_size=self.batch_size)
         # reshape to minimum of two dimensions
-        step_summ, _ = self.session.run(
-            [self.step_summary, self.train_op],
-            feed_dict={
-                self.states_ph: states.reshape(-1, *self.obs_shape),
-                self.actions_ph: actions.reshape(-1, *self.action_shape),
-                self.rewards_ph: rewards.reshape(-1, 1),
-                self.next_states_ph: next_states.reshape(-1, *self.obs_shape),
-                self.dones_ph: dones.reshape(-1, 1)
-            }
-        )
-        self.summary_writer.add_summary(step_summ, self.step_counter)
+        if self.log:
+            step_summ, _ = self.session.run(
+                [self.step_summary, self.train_op],
+                feed_dict={
+                    self.states_ph: states.reshape(-1, *self.obs_shape),
+                    self.actions_ph: actions.reshape(-1, *self.action_shape),
+                    self.rewards_ph: rewards.reshape(-1, 1),
+                    self.next_states_ph: next_states.reshape(-1, *self.obs_shape),
+                    self.dones_ph: dones.reshape(-1, 1)
+                }
+            )
+            self.summary_writer.add_summary(step_summ, self.step_counter)
+        else:
+            self.session.run(
+                self.train_op,
+                feed_dict={
+                    self.states_ph: states.reshape(-1, *self.obs_shape),
+                    self.actions_ph: actions.reshape(-1, *self.action_shape),
+                    self.rewards_ph: rewards.reshape(-1, 1),
+                    self.next_states_ph: next_states.reshape(-1, *self.obs_shape),
+                    self.dones_ph: dones.reshape(-1, 1)
+                }
+            )
 
     def evaluate(self, env_cls, n_episodes=10000, tmax=None, policy=None, env_params=None, init=False):
         """Evaluate the agent on an environemt without training.
