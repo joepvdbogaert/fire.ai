@@ -224,9 +224,17 @@ class ExperienceGatheringProcess(mp.Process):
         targets = np.zeros(task["reps"])
 
         for i in range(task["reps"]):
-            state = self.state_processor(self.env.reset(forced_vehicles=task["deployed"]))
-            self.manipulate_state(state, task["state"])
-            responses[i], targets[i] = self.env._simulate()
+
+            success = False
+
+            while not success:
+                state = self.state_processor(self.env.reset(forced_vehicles=task["deployed"]))
+                self.manipulate_state(state, task["state"])
+                response, target = self.env._simulate()
+                if isinstance(response, (float, int)):
+                    success = True
+
+            responses[i], targets[i] = response, target
 
         task["responses"] = responses
         task["targets"] = targets
