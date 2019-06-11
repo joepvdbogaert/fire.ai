@@ -70,19 +70,9 @@ class FireCommanderV2(FireCommanderBigEnv):
             vehicles_per_station = self._get_available_vehicles()
 
         # obtain the state with the next destination
-        try:
-            self.current_dest = self.destination_candidates.pop(0)
-            self.state, self.is_done = self._extract_state(vehicles_per_station)
-        except IndexError:
-            self.render()
-            print("t: {}".format(self.sim.t))
-            print("sim log:")
-            print(self.sim.log[0:10])
-            print("-----------")
-            print("availabel vehicles:")
-            print(self._get_available_vehicles())
-            print(self.destination_candidates)
-            raise IndexError("pop pop")
+        self.current_dest = self.destination_candidates.pop(0)
+        self.state, self.is_done = self._extract_state(vehicles_per_station)
+
 
         # adjust reward if invalid action was taken
         if not valid:
@@ -93,10 +83,11 @@ class FireCommanderV2(FireCommanderBigEnv):
         return self.state, self.reward, self.is_done, \
                 {"last_action": self.last_action, "valid": valid}
 
-    def reset(self):
-        self.sim.simulate_big_incident()
-        self.t_episode_end = self.sim.log[0, 11:13].sum() / 60
-        self.time = self.sim.log[0, 1]
+    def reset(self, forced_vehicles=None):
+        """Reset the environment to start a new episode."""
+        self.sim.fast_simulate_big_incident(forced_num_ts=forced_vehicles)
+        self.t_episode_end = self.sim.major_incident_info["duration"]
+        self.time = self.sim.major_incident_info["time"]
         self.destination_candidates, vehicles_per_station = self._get_empty_stations()
         self.current_dest = self.destination_candidates.pop(0)
         self.state, _ = self._extract_state(vehicles_per_station)
@@ -167,6 +158,48 @@ class FireCommanderV2(FireCommanderBigEnv):
         """
         vehicles = self._get_available_vehicles()
         return np.flatnonzero(vehicles == 0).tolist(), vehicles
+
+    def _simulate(self):
+        """Simulate a single incident and all corresponding deployments."""
+        # sample incident and update status of vehicles at new time t
+        self.sim.t, self.time, type_, loc, prio, req_vehicles, func, dest = self.sim._sample_incident()
+        self.sim._fast_update_vehicles(self.sim.t, self.time)
+
+        if self._check_episode_end_condition():
+            return None, None
+
+        # sample dispatch time
+        dispatch = self.sim.rsampler.sample_dispatch_time(type_)
+
+        # keep track of minimum TS response time
+        min_ts_response = np.inf
+
+        # get target response time
+        target = self.sim._get_target(type_, func, prio)
+
+        # sample rest of the response time for TS vehicles
+        for v in req_vehicles:
+            if v == "TS":
+
+                vehicle, estimated_time = self.sim._fast_pick_vehicle(loc, v)
+                if vehicle is None:
+                    turnout, travel, onscene, response = [np.nan]*4
+
+                else:
+                    turnout = next(self.sim.rsampler.turnout_generators["fulltime"][prio][vehicle.type])
+                    travel = self.sim.rsampler.sample_travel_time(estimated_time, vehicle.type)
+                    onscene = next(self.sim.rsampler.onscene_generators[type_][vehicle.type])
+                    response = dispatch + turnout + travel
+                    vehicle.dispatch(dest, self.sim.t + (response + onscene + estimated_time) / 60)
+
+                # we must return a numerical value
+                if np.isnan(response):
+                    response = self.worst_response
+
+                if response < min_ts_response:
+                    min_ts_response = response
+
+        return min_ts_response, target
 
     def get_snapshot(self):
         """Retrieve data from the environment in order to return to its current state
