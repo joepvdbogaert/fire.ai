@@ -115,8 +115,8 @@ class FireCommanderV2(FireCommanderBigEnv):
         elif self.state[action] == 0:  # invalid: no vehicle available at origin
             return False
         else:  # valid, relocate
-            self.sim.relocate_vehicle("TS", self.station_names[action],
-                                      self.station_names[self.current_dest])
+            self.sim.fast_relocate_vehicle("TS", self.station_names[action],
+                                            self.station_names[self.current_dest])
             return True
 
     def _extract_state(self, vehicles_per_station):
