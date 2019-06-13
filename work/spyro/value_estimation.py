@@ -81,11 +81,13 @@ class BaseParallelValueEstimator(object):
         # create exhaustive list of states
         ranges = [np.arange(0, y + 1) for y in self.max_values]
         all_states = np.array([x for x in product(*ranges)])
+        state_sums = [all_states[i, :].sum() for i in range(len(all_states))]
 
         tasks = [
-            {"state": all_states[i, :], "available": all_states[i, :].sum(),
-             "deployed": self.total_vehicles- all_states[i, :].sum(), "reps": reps}
+            {"state": all_states[i, :], "available": state_sums[i],
+             "deployed": self.total_vehicles - state_sums[i], "reps": reps}
             for i in range(len(all_states))
+            if (state_sums[i] != 0) and (state_sums[i] != self.total_vehicles)
         ]
 
         if debug_subset is not None:
@@ -167,7 +169,7 @@ class TabularValueEstimator(BaseParallelValueEstimator):
     def process_performed_task(self, task):
         """Store results of a task in a table."""
         state = tuple(task.pop("state"))
-        self.table[tuple(state)] = task
+        self.table[state] = task
 
     def save_table(self, path="../results/state_value_table.pkl"):
         pickle.dump(self.table, open(path, "wb"))
@@ -191,7 +193,7 @@ class ExperienceGatheringProcess(mp.Process):
         self.state_processor = state_processor
         print("Worker initialized.")
 
-    def run(self, profile=True, path="../results/profile_run.stats"):
+    def run(self, profile=False, path="../results/profile_run.stats"):
         """Call the main functionality of the class."""
         if profile:
             cProfile.runctx('self._run()', globals(), locals(), path)
@@ -215,7 +217,7 @@ class ExperienceGatheringProcess(mp.Process):
                 task = self.task_queue.get(timeout=1)
                 self.perform_task(task)
             except queue.Empty:
-                print("Empty task queue found at worker. Killing worker.")
+                print("Empty task queue found at worker. Shutting down worker.")
                 break
 
     def perform_task(self, task):
@@ -231,7 +233,7 @@ class ExperienceGatheringProcess(mp.Process):
                 state = self.state_processor(self.env.reset(forced_vehicles=task["deployed"]))
                 self.manipulate_state(state, task["state"])
                 response, target = self.env._simulate()
-                if isinstance(response, (float, int)):
+                if (response is not None) and (response != np.inf):
                     success = True
 
             responses[i], targets[i] = response, target
