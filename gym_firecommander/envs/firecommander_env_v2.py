@@ -85,10 +85,16 @@ class FireCommanderV2(FireCommanderBigEnv):
 
     def reset(self, forced_vehicles=None):
         """Reset the environment to start a new episode."""
-        self.sim.fast_simulate_big_incident(forced_num_ts=forced_vehicles)
-        self.t_episode_end = self.sim.major_incident_info["duration"]
-        self.time = self.sim.major_incident_info["time"]
-        self.destination_candidates, vehicles_per_station = self._get_empty_stations()
+        if forced_vehicles == 0:
+            raise ValueError("Cannot simulate incident without deployments.")
+
+        self.destination_candidates = []
+        while len(self.destination_candidates) == 0:
+            self.sim.fast_simulate_big_incident(forced_num_ts=forced_vehicles)
+            self.t_episode_end = self.sim.major_incident_info["duration"]
+            self.time = self.sim.major_incident_info["time"]
+            self.destination_candidates, vehicles_per_station = self._get_empty_stations()
+
         self.current_dest = self.destination_candidates.pop(0)
         self.state, _ = self._extract_state(vehicles_per_station)
         return self.state
