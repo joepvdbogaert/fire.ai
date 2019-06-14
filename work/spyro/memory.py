@@ -16,7 +16,7 @@ class BaseMemory(object):
         self.memory = {key: deque(maxlen=self.size) for key in keys}
 
     def __len__(self):
-        return len(self.memory["states"])
+        return len(self.memory[self.keys[0]])
 
     def _get_batch(self, indices):
         """Get data by indices."""
