@@ -78,7 +78,7 @@ def n_step_temporal_difference(rewards, state_values, gamma=0.9, n=10):
     gamma_array = gamma ** np.arange(n + 1)
     rewards = np.append(rewards, np.zeros(n))
     values = np.append(state_values, np.zeros(n))
-    returns = np.array([np.dot(gamma_array, np.append(rewards[i:(i + n)], values[i + n + 1])) for i in range(t)])
+    returns = np.array([np.dot(gamma_array, np.append(rewards[i:(i + n)], values[i + n])) for i in range(t)])
     return returns
 
 
