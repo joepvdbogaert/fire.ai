@@ -445,3 +445,68 @@ class FireCommanderV2TestEnv(BaseTestEnv, FireCommanderV2):
 
         return self.state, self.reward, self.is_done, \
                 {"last_action": self.last_action, "valid": valid}
+
+    def _simulate_from_data(self):
+        """Simulate a single incident and all corresponding deployments.
+
+        In contrast to the normal FireCommanderEnv, incidents are given by pre-simulated
+        test episodes and so are the dispatch and on-scene times. The travel and turnout
+        times are simulated, since these depend on the available vehicles and crews.
+        """
+        # collect incident information
+        self.sim.t, self.time, type_, loc, prio, func, _, _, dispatch, _, _, _, _, target, _, _, _ = \
+                self.current_log[self.log_row, :]
+
+        # update vehicles
+        self.sim._fast_update_vehicles(self.sim.t, self.time)
+
+        # find required number of vehicles, all are TS vehicles so we need not check for type
+        onscene_times = self.current_log[self.current_log[:, 0] == self.sim.t, 11]
+
+        # keep track of minimum TS response time
+        min_ts_response = np.inf
+
+        # dispatch all the needed vehicles and collect the turnout and travel time
+        for i, onscene in enumerate(onscene_times):
+
+            vehicle, estimated_time = self.sim._fast_pick_vehicle(loc, "TS")
+
+            if vehicle is None:
+                turnout, travel = np.nan, np.nan
+                response = self.worst_response
+                vtype = "EXTERNAL"
+                vid = "EXTERNAL"
+                current_station = "EXTERNAL"
+                base_station = "EXTERNAL"
+                crew = "EXTERNAL"
+            else:
+
+                turnout = next(self.sim.rsampler.turnout_generators["fulltime"][prio]["TS"])
+                travel = self.sim.rsampler.sample_travel_time(estimated_time, "TS")
+
+                response = dispatch + turnout + travel
+                vehicle.dispatch(loc, self.sim.t + (response + onscene + estimated_time) / 60)
+
+                vtype, vid, current_station, base_station, crew = (vehicle.type, vehicle.id,
+                    vehicle.current_station_name, vehicle.base_station_name, "fulltime")
+
+            # we must return a numerical value
+            if response < min_ts_response:
+                min_ts_response = response
+
+            # log results for this deployment to data for possible further analysis
+            self.data[self.ep]["log"][self.log_row + i, :] = [
+                self.sim.t, self.time, type_, loc, prio, func, vtype,
+                vid, dispatch, turnout, travel, onscene, response, target,
+                current_station, base_station, crew
+            ]
+
+        # increment the row in the log / multiple steps to the next incident
+        # and indicate whether the end of the episode is reached.
+        self.log_row += len(onscene_times)
+        if self.log_row >= len(self.current_log):
+            self.is_done = True
+        else:
+            self.is_done = False
+
+        return min_ts_response, target
