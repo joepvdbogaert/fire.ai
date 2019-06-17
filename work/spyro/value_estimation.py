@@ -81,7 +81,7 @@ class BaseParallelValueEstimator(object):
             progress("multiprocessing method not (re)set to 'spawn', because context was "
                      "already given.", verbose=self.verbose)
 
-    def define_tasks(self, include_time=False, reps=100, debug_subset=None):
+    def define_tasks(self, reps=100, debug_subset=None):
         """Define the states that will be explored by the worker processes.
 
         Parameters
@@ -134,7 +134,7 @@ class BaseParallelValueEstimator(object):
             wraps up the other processes.
         """
         # define tasks and put them in a global queue
-        tasks = self.define_tasks(include_time=include_time, reps=reps, debug_subset=debug_subset)
+        tasks = self.define_tasks(reps=reps, debug_subset=debug_subset)
         self.global_counter = 0
         self.num_tasks = len(tasks)
 
