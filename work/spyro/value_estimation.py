@@ -46,15 +46,17 @@ class BaseParallelValueEstimator(object):
         The number of worker processes to use. If -1, uses one per available per CPU core.
     """
 
-    def __init__(self, num_workers=-1, max_queue_size=100, include_time=False, name="ValueEstimator"):
+    def __init__(self, num_workers=-1, max_queue_size=100, include_time=False, name="ValueEstimator",
+                 verbose=True):
         """Initialize general parameters."""
+        self.verbose = verbose
 
         # set number of worker processes
         if num_workers == -1:
             self.num_workers = mp.cpu_count()
         else:
             self.num_workers = num_workers
-        print("Using {} workers".format(self.num_workers))
+        progress("Using {} workers".format(self.num_workers), verbose=self.verbose)
 
         # other parameters
         self.max_queue_size = max_queue_size
@@ -76,7 +78,8 @@ class BaseParallelValueEstimator(object):
         try:
             mp.set_start_method("spawn")
         except RuntimeError:
-            print("multiprocessing method not (re)set to 'spawn', because context was already given.")
+            progress("multiprocessing method not (re)set to 'spawn', because context was "
+                     "already given.", verbose=self.verbose)
 
     def define_tasks(self, include_time=False, reps=100, debug_subset=None):
         """Define the states that will be explored by the worker processes.
@@ -139,7 +142,7 @@ class BaseParallelValueEstimator(object):
         self.result_queue = mp.Queue()
 
         _ = list(map(self.task_queue.put, tasks))
-        print("Put {} tasks in Queue (queue length: {})".format(self.num_tasks, self.task_queue.qsize()))
+        progress("Put {} tasks in Queue (queue length: {})".format(self.num_tasks, self.task_queue.qsize()), verbose=self.verbose)
 
         # initialize workers
         workers = [
@@ -160,9 +163,10 @@ class BaseParallelValueEstimator(object):
                     performed_task = self.result_queue.get(block=True, timeout=timeout)
                     self.process_performed_task(performed_task)
                     self.global_counter += 1
-                    print("\rperformed {} / {} tasks".format(self.global_counter, self.num_tasks), end="")
+                    progress("performed {} / {} tasks".format(self.global_counter, self.num_tasks),
+                             same_line=True, newline_end=False, verbose=self.verbose)
                 except queue.Empty:
-                    print("\nQueue is empty. Breaking loop.")
+                    progress("\nQueue is empty. Breaking loop.", verbose=self.verbose)
                     break
 
         except KeyboardInterrupt:
@@ -172,7 +176,7 @@ class BaseParallelValueEstimator(object):
             if worker.is_alive():
                 worker.join()
 
-    def gather_random_experiences(self, env_cls, total_steps=50000000, env_params=None, timeout=3):
+    def gather_random_experiences(self, env_cls, total_steps=50000000, start_step=0, env_params=None, timeout=3):
         """Collect random experiences from parallel workers.
 
         Parameters
@@ -187,7 +191,8 @@ class BaseParallelValueEstimator(object):
             The maximum time to wait for an item in the results queue if it is empty.
         """
         self.stop_indicator = mp.Value("i", 0)
-        self.global_counter = 0
+        self.global_counter = start_step
+        total_steps = total_steps + start_step
         self.result_queue = mp.Queue(self.max_queue_size)
 
         # initialize workers
@@ -213,19 +218,19 @@ class BaseParallelValueEstimator(object):
                     self.process_random_experience(experience)
                     self.global_counter += 1
                     progress("Processed {} / {} experiences".format(self.global_counter, total_steps),
-                             same_line=True, newline_end=False)
+                             same_line=True, newline_end=False, verbose=self.verbose)
                 except queue.Empty:
-                    progress("\nQueue is empty. Breaking loop.")
+                    progress("\nQueue is empty. Breaking loop.", verbose=self.verbose)
                     break
 
                 if self.global_counter >= total_steps:
                     if self.stop_indicator.value == 0:
                         with self.stop_indicator.get_lock():
                             self.stop_indicator.value = 1
-                        progress("\nSent stop signal to workers. Processing last results in queue.")
+                        progress("\nSent stop signal to workers. Processing last results in queue.", verbose=self.verbose)
 
         except KeyboardInterrupt:
-            progress("KeyboardInterrupt: sending stop signal and waiting for workers...")
+            progress("KeyboardInterrupt: sending stop signal and waiting for workers.", verbose=self.verbose)
             with self.stop_indicator.get_lock():
                 self.stop_indicator.value = 1
 
@@ -233,7 +238,7 @@ class BaseParallelValueEstimator(object):
             if worker.is_alive():
                 worker.join()
 
-        print("Stopped gracefully.")
+        progress("Workers stopped gracefully.", verbose=self.verbose)
 
     def fit(self, env_cls, permutations=False, env_params=None, *args, **kwargs):
         """Fit the estimator on the environment."""
@@ -675,7 +680,7 @@ class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
 
     def fit(self, env_cls, epochs=100, steps_per_epoch=100000, warmup_steps=50000,
             validation_freq=1, val_batch_size=10000, validation_data=None, permutations=False,
-            env_params=None, metric="mae", verbose=True, *args, **kwargs):
+            env_params=None, metric="mae", verbose=True, save_freq=0, *args, **kwargs):
         """Fit the estimator on the environment.
 
         Parameters
@@ -703,6 +708,7 @@ class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
         """
         if warmup_steps is not None:
             self.warmup_steps = warmup_steps
+        self.verbose = verbose
 
         if (validation_data is not None) and (validation_freq > 0):
             val_x, val_y = validation_data
@@ -713,16 +719,20 @@ class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
             if permutations:
                 raise NotImplementedError("Training on all permutations is not implemented yet.")
             else:
-                self.gather_random_experiences(env_cls, env_params=None, total_steps=steps_per_epoch, *args, **kwargs)
+                self.gather_random_experiences(env_cls, env_params=None, total_steps=steps_per_epoch,
+                                               start_step=epoch*steps_per_epoch, *args, **kwargs)
 
             # evaluate
             if validate and (epoch % validation_freq == 0):
                 loss = self.evaluate(val_x, val_y, metric=metric, raw_quantiles=False, batch_size=val_batch_size, verbose=False)
-                progress("Epoch {} val score: {}".format(epoch, loss))
+                progress("Epoch {}/{}. Val score: {}".format(epoch + 1, epochs, loss))
 
-        progress("Completed {} epochs of training.")
+            if (epoch % save_freq == 0) and (save_freq > 0) and self.log:
+                self.save_weights()
 
-        if epochs % validation_freq != 0:#
+        progress("Completed {} epochs of training.".format(epochs))
+
+        if epochs % validation_freq != 0:
             loss = self.evaluate(val_x, val_y, metric=metric, raw_quantiles=False, batch_size=val_batch_size, verbose=False)
             progress("Final validation score: {}")
 
@@ -757,7 +767,7 @@ class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
         elif metric == "wasserstein":
             raise NotImplementedError("Wasserstein metric not implemented yet.")
 
-        if verbose: print("Evaluation score ({}): {}".format(metric, loss))
+        progress("Evaluation score ({}): {}".format(metric, loss), verbose=self.verbose)
         return loss
 
     def get_config(self):
