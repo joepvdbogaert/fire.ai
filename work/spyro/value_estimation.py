@@ -19,6 +19,7 @@ from spyro.utils import make_env, obtain_env_information
 from spyro.builders import build_mlp_regressor, build_distributional_dqn
 from spyro.core import BaseAgent
 from spyro.losses import quantile_huber_loss
+from spyro.utils import progress
 
 
 # global variables specifying some FireCommanderV2 characteristics
@@ -176,8 +177,12 @@ class BaseParallelValueEstimator(object):
 
         Parameters
         ----------
+        env_cls: Python class
+            The environment to train on.
         total_steps: int, default=50000000
             The total number of experiences to gather.
+        env_params: dict, default=None
+            Parameters passed to env_cls upon initialization.
         timeout: int, default=3
             The maximum time to wait for an item in the results queue if it is empty.
         """
@@ -207,19 +212,20 @@ class BaseParallelValueEstimator(object):
                     experience = self.result_queue.get(block=True, timeout=timeout)
                     self.process_random_experience(experience)
                     self.global_counter += 1
-                    print("\rObtained {} / {} experiences".format(self.global_counter, total_steps), end="")
+                    progress("Processed {} / {} experiences".format(self.global_counter, total_steps),
+                             same_line=True, newline_end=False)
                 except queue.Empty:
-                    print("\nQueue is empty. Breaking loop.")
+                    progress("\nQueue is empty. Breaking loop.")
                     break
 
                 if self.global_counter >= total_steps:
                     if self.stop_indicator.value == 0:
                         with self.stop_indicator.get_lock():
                             self.stop_indicator.value = 1
-                        print("\nSent stop signal to workers. Processing last results in queue.")
+                        progress("\nSent stop signal to workers. Processing last results in queue.")
 
         except KeyboardInterrupt:
-            print("KeyboardInterrupt: sending stop signal and waiting for workers...")
+            progress("KeyboardInterrupt: sending stop signal and waiting for workers...")
             with self.stop_indicator.get_lock():
                 self.stop_indicator.value = 1
 
@@ -255,7 +261,8 @@ class ExperienceGatheringProcess(mp.Process):
     """
 
     def __init__(self, env_cls, result_queue, task_queue=None, stop_indicator=None,
-                 state_processor=None, tasks=False, env_params=None, timeout=5):
+                 state_processor=None, tasks=False, env_params=None, timeout=5,
+                 verbose=False):
         super().__init__()
         self.env_cls = env_cls
         self.env_params = env_params
@@ -265,13 +272,14 @@ class ExperienceGatheringProcess(mp.Process):
         self.stop_indicator = stop_indicator
         self.tasks = tasks
         self.timeout = timeout
+        self.verbose = verbose
 
         if self.tasks:
             assert task_queue is not None, "Must provide a task_queue if tasks=True"
         else:
             assert stop_indicator is not None, "Must provide a stop_indicator if tasks=False"
 
-        print("Worker initialized.")
+        progress("Worker initialized.", verbose=self.verbose)
 
     def run(self):
         """Call the main functionality of the class."""
@@ -290,7 +298,7 @@ class ExperienceGatheringProcess(mp.Process):
         """Start interacting with the environment to obtain specifically requested
         experiences (tasks) and send the results to the global queue.
         """
-        print("Start peforming tasks.")
+        progress("Start peforming tasks.", verbose=self.verbose)
         self._make_env()
 
         while True:
@@ -298,14 +306,14 @@ class ExperienceGatheringProcess(mp.Process):
                 task = self.task_queue.get(timeout=1)
                 self.perform_task(task)
             except queue.Empty:
-                print("Empty task queue found at worker. Shutting down worker.")
+                progress("Empty task queue found at worker. Shutting down worker.", verbose=self.verbose)
                 break
 
     def _run_randomly(self):
         """Start interacting with the environment without manipulating the state in-between
         steps and send the result of each step to the global results queue.
         """
-        print("Start obtaining experiences.")
+        progress("Start obtaining experiences.", verbose=self.verbose)
         self._make_env()
 
         while self.stop_indicator.value != 1:
@@ -325,7 +333,8 @@ class ExperienceGatheringProcess(mp.Process):
                             block=True, timeout=self.timeout
                         )
                     except queue.Full:
-                        print("Queue has been full for {} seconds. Breaking.".format(self.timeout))
+                        progress("Queue has been full for {} seconds. Breaking."
+                                 .format(self.timeout), verbose=self.verbose)
                         break
 
                 raw_state, done = self.env._extract_state(self.env._get_available_vehicles())
@@ -393,7 +402,7 @@ class TabularValueEstimator(BaseParallelValueEstimator):
 
     def save_table(self, path="../results/state_value_table.pkl"):
         pickle.dump(self.table, open(path, "wb"))
-        print("Table saved at {}".format(path))
+        progress("Table saved at {}".format(path))
 
     def load_table(self, path):
         self.table = pickle.load(open(path, "rb"))
@@ -446,9 +455,9 @@ class DataSetCreator(BaseParallelValueEstimator):
         self.data_response = np.empty(size)
         self.data_target = np.empty(size)
         self.index = 0
-        print("Creating dataset of {} observations.".format(size))
+        progress("Creating dataset of {} observations.".format(size))
         self.fit(env_cls, permutations=permutations, total_steps=size, env_params=env_params, *args, **kwargs)
-        print("Dataset created.")
+        progress("Dataset created.")
         if save:
             self.save_data(path=save_path)
 
@@ -470,7 +479,7 @@ class DataSetCreator(BaseParallelValueEstimator):
             columns=["state_{}".format(j) for j in range(self.data_state.shape[1])] + ["response", "target"]
         )
         df.to_csv(path, index=False)
-        print("Dataset saved at {}".format(path))
+        progress("Dataset saved at {}".format(path))
 
 
 class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
@@ -558,9 +567,6 @@ class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
             self.summary_writer = tf.summary.FileWriter(self.logdir, self.session.graph)
 
         self.session.run(tf.global_variables_initializer())
-        # debug:
-        shapes = [tf.shape(self.targets), tf.shape(self.quantiles)]
-        print(self.session.run(shapes, feed_dict={self.states_ph: np.random.randint(0, 2, size=(64, 17)), self.values_ph: np.random.sample(size=(64, 1))}))
 
     def process_random_experience(self, experience):
         """Process an experience by storing it in memory and (at training time) sampling a
@@ -601,7 +607,162 @@ class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
                     }
                 )
 
+    def predict_quantiles(self, X, batch_size=10000):
+        """Predict quantiles of the response time distribution of a set of states.
+
+        Parameters
+        ----------
+        X: array-like, 2D
+            The input data to predict.
+        batch_size: int, default=10000
+            The batch size to use when predicting. Influences memory and time costs.
+
+        Returns
+        -------
+        Y_hat: np.array
+            The predicted quantiles of the response time with shape [n_samples, n_quantiles].
+        """
+        assert self.quantiles, ("predict_quantiles can only be done for Quantile Regression"
+                                "networks (initialize with quantiles=True).")
+
+        if isinstance(X, pd.DataFrame):
+            X = X.values
+
+        if batch_size is None:
+            return self.session.run(self.quantile_predictions, feed_dict={self.states_ph: X})
+        else:
+            outputs = [
+                self.session.run(
+                    self.quantile_predictions,
+                    feed_dict={self.states_ph: X[(i * batch_size):((i + 1)*batch_size), :]}
+                )
+                for i in range(int(np.ceil(len(X) / batch_size)))
+            ]
+            return np.concatenate(outputs, axis=0)
+
+    def predict(self, X, batch_size=10000):
+        """Predict the expected value / response time of set of states.
+
+        Parameters
+        ----------
+        X: array-like, 2D
+            The input data to predict.
+        batch_size: int, default=10000
+            The batch size to use when predicting. Influences memory and time costs.
+
+        Returns
+        -------
+        Y_hat: np.array
+            The predicted values / responses.
+        """
+        if isinstance(X, pd.DataFrame):
+            X = X.values
+
+        if self.quantiles:
+            Y_hat = self.predict_quantiles(X, batch_size=batch_size)
+            return Y_hat.mean(axis=1)
+        elif batch_size is None:
+            return self.session.run(self.value_prediction, feed_dict={self.states_ph: X})
+        else:
+            outputs = [
+                self.session.run(
+                    self.value_prediction,
+                    feed_dict={self.states_ph: X[(i * batch_size):((i + 1)*batch_size), :]}
+                )
+                for i in range(int(np.ceil(len(X) / batch_size)))
+            ]
+            return np.concatenate(outputs, axis=0)
+
+    def fit(self, env_cls, epochs=100, steps_per_epoch=100000, warmup_steps=50000,
+            validation_freq=1, val_batch_size=10000, validation_data=None, permutations=False,
+            env_params=None, metric="mae", verbose=True, *args, **kwargs):
+        """Fit the estimator on the environment.
+
+        Parameters
+        ----------
+        env_cls: Python class
+            The environment to train on.
+        epochs: int, default=100
+            The number of epochs to train.
+        steps_per_epoch: int, default=100,000
+            The number of steps to count as one epoch.
+        validation_freq: int, default=1
+            After how many epochs to evaluate on validation data. Set to 0 if you don't want
+            to validate.
+        val_batch_size: int, default=10,000
+            The batch size to use in validation.
+        validation_data: tuple(array-like, array-like)
+            The data to use for validation.
+        permutations: bool, default=False
+            Whether to sample all state-permutations for training (True) or just sample
+            according to distributions in the simulation (False).
+        env_params: dict
+            Parameters passed to env_cls upon initialization.
+        *args, **kwargs: any
+            Parameters passed to perform_tasks or gather_random_experiences.
+        """
+        if warmup_steps is not None:
+            self.warmup_steps = warmup_steps
+
+        if (validation_data is not None) and (validation_freq > 0):
+            val_x, val_y = validation_data
+            validate = True
+
+        for epoch in range(epochs):
+            # train
+            if permutations:
+                raise NotImplementedError("Training on all permutations is not implemented yet.")
+            else:
+                self.gather_random_experiences(env_cls, env_params=None, total_steps=steps_per_epoch, *args, **kwargs)
+
+            # evaluate
+            if validate and (epoch % validation_freq == 0):
+                loss = self.evaluate(val_x, val_y, metric=metric, raw_quantiles=False, batch_size=val_batch_size, verbose=False)
+                progress("Epoch {} val score: {}".format(epoch, loss))
+
+        progress("Completed {} epochs of training.")
+
+        if epochs % validation_freq != 0:#
+            loss = self.evaluate(val_x, val_y, metric=metric, raw_quantiles=False, batch_size=val_batch_size, verbose=False)
+            progress("Final validation score: {}")
+
+    def evaluate(self, X, Y, metric="mae", raw_quantiles=False, batch_size=10000, verbose=True):
+        """Evaluate on provided data after training.
+
+        Parameters
+        ----------
+        X, Y: array-like, 2D
+            The input data and corresponding labels to evaluate on.
+        batch_size: int, default=10000
+            The batch size to use when predicting. Influences memory and time costs.
+        """
+        if isinstance(X, pd.DataFrame):
+            X = X.values
+        if isinstance(Y, pd.DataFrame):
+            Y = Y.values
+        if len(Y.shape) == 1:
+            Y = Y.reshape(-1, 1)
+
+        if raw_quantiles:
+            Y_hat = self.predict_quantiles(X, batch_size=batch_size)
+        else:
+            Y_hat = self.predict(X, batch_size=batch_size)
+
+        if metric == "mae":
+            loss = np.abs(Y - Y_hat).mean()
+        elif metric == "mse":
+            loss = np.square(Y - Y_hat).mean()
+        elif metric == "rmse":
+            loss = np.sqrt(np.square(Y - Y_hat).mean())
+        elif metric == "wasserstein":
+            raise NotImplementedError("Wasserstein metric not implemented yet.")
+
+        if verbose: print("Evaluation score ({}): {}".format(metric, loss))
+        return loss
+
     def get_config(self):
+        """Get the configuration of the estimator as a dictionary. Useful for reconstructing a
+        trained estimator."""
         return {
             "memory": self.memory.get_config(),
             "n_neurons": self.n_neurons,
