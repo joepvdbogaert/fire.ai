@@ -108,7 +108,7 @@ class QuantileRegressionDQNAgent(DQNAgent):
             action_quants_reshaped = tf.reshape(action_quants, [tf.shape(action_quants)[0], self.num_atoms, self.num_atoms])
 
             # compute errors and loss
-            self.errors = tf.subtract(targets_reshaped, action_quants_reshaped)
+            self.errors = tf.subtract(tf.stop_gradients(targets_reshaped), action_quants_reshaped)
             self.loss = quantile_huber_loss(self.errors, kappa=self.kappa)
 
             self.online_vars = tf.trainable_variables(scope=self.name + "/online")
