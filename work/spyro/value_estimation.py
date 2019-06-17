@@ -3,8 +3,10 @@ using parallel worker-simulators to gather experiences from specific states. The
 is to obtain state-value estimates of all (or at least the most relevant) states.
 """
 import numpy as np
+import pandas as pd
 import multiprocessing as mp
 import tensorflow as tf
+import time
 import queue
 import pickle
 import copy
@@ -16,6 +18,7 @@ from itertools import product
 from spyro.utils import make_env, obtain_env_information
 from spyro.builders import build_mlp_regressor, build_distributional_dqn
 from spyro.core import BaseAgent
+from spyro.losses import quantile_huber_loss
 
 
 # global variables specifying some FireCommanderV2 characteristics
@@ -168,7 +171,7 @@ class BaseParallelValueEstimator(object):
             if worker.is_alive():
                 worker.join()
 
-    def gather_random_experiences(self, env_cls, total_steps=50000000, env_params=None, timeout=10):
+    def gather_random_experiences(self, env_cls, total_steps=50000000, env_params=None, timeout=3):
         """Collect random experiences from parallel workers.
 
         Parameters
@@ -180,7 +183,8 @@ class BaseParallelValueEstimator(object):
         """
         self.stop_indicator = mp.Value("i", 0)
         self.global_counter = 0
-        self.result_queue = mp.Queue()
+        self.result_queue = mp.Queue(self.max_queue_size)
+
         # initialize workers
         workers = [
             ExperienceGatheringProcess(
@@ -194,6 +198,9 @@ class BaseParallelValueEstimator(object):
         for worker in workers:
             worker.start()
 
+        # wait for workers to start delivering
+        time.sleep(5)
+
         try:
             while True:
                 try:
@@ -206,10 +213,11 @@ class BaseParallelValueEstimator(object):
                     break
 
                 if self.global_counter >= total_steps:
-                    with self.stop_indicator.get_lock():
-                        self.stop_indicator.value = 1
-                    print("Total steps reached. I sent the stop signal to workers, but will"
-                          " keep processing incoming results.")
+                    if self.stop_indicator.value == 0:
+                        with self.stop_indicator.get_lock():
+                            self.stop_indicator.value = 1
+                        print("\nSent stop signal to workers. Processing last results in queue.")
+
         except KeyboardInterrupt:
             print("KeyboardInterrupt: sending stop signal and waiting for workers...")
             with self.stop_indicator.get_lock():
@@ -247,7 +255,7 @@ class ExperienceGatheringProcess(mp.Process):
     """
 
     def __init__(self, env_cls, result_queue, task_queue=None, stop_indicator=None,
-                 state_processor=None, tasks=False, env_params=None):
+                 state_processor=None, tasks=False, env_params=None, timeout=5):
         super().__init__()
         self.env_cls = env_cls
         self.env_params = env_params
@@ -256,6 +264,7 @@ class ExperienceGatheringProcess(mp.Process):
         self.state_processor = state_processor
         self.stop_indicator = stop_indicator
         self.tasks = tasks
+        self.timeout = timeout
 
         if self.tasks:
             assert task_queue is not None, "Must provide a task_queue if tasks=True"
@@ -299,7 +308,7 @@ class ExperienceGatheringProcess(mp.Process):
         print("Start obtaining experiences.")
         self._make_env()
 
-        while self.stop_indicator != 1:
+        while self.stop_indicator.value != 1:
 
             # start episode by resetting env
             state = self.state_processor(self.env.reset())
@@ -310,9 +319,14 @@ class ExperienceGatheringProcess(mp.Process):
                 response, target = self.env._simulate()
 
                 if (response is not None) and (response != np.inf):
-                    self.result_queue.put(
-                        {"state": state, "response": response, "target": target}
-                    )
+                    try:
+                        self.result_queue.put(
+                            {"state": state, "response": response, "target": target},
+                            block=True, timeout=self.timeout
+                        )
+                    except queue.Full:
+                        print("Queue has been full for {} seconds. Breaking.".format(self.timeout))
+                        break
 
                 raw_state, done = self.env._extract_state(self.env._get_available_vehicles())
                 state = self.state_processor(raw_state)
@@ -385,6 +399,80 @@ class TabularValueEstimator(BaseParallelValueEstimator):
         self.table = pickle.load(open(path, "rb"))
 
 
+class DataSetCreator(BaseParallelValueEstimator):
+    """Class that gathers experiences from parallel workers and creates a dataset with
+    states and responses (and targets) from those states.
+
+    This class is intended to create test (and validation) datasets to evaluate trained
+    estimators on.
+
+    Parameters
+    ----------
+    name: str, default="DataSetCreator"
+        Name of the object.
+    *args, **kwargs: any
+        Parameters passed to the Base class.
+    """
+
+    def __init__(self, name="DataSetCreator", *args, **kwargs):
+        super().__init__(name=name, *args, **kwargs)
+        # use the same method when performing tasks as when obtaining random experiences
+        self.process_random_experience = self._process_experience
+        self.process_performed_task = self._process_experience
+
+    def create_data(self, env_cls, size=1000000, permutations=False, save=True,
+                    env_params=None, save_path="../results/dataset.csv", *args, **kwargs):
+        """Generate a dataset.
+
+        Parameters
+        ----------
+        env_cls: Python class
+            The environment to obtain experiences from.
+        size: int, default=1000000
+            The number of samples to simulate.
+        permutations: bool, default=False
+            Whether to force every state to be visited (True) or simulate according to patterns
+            in the simulation.
+        save: bool, default=True
+            Whether to save the resulting dataset.
+        env_params: dict, default=None
+            Dictionary with key-value pairs to pass to the env_cls upon initialization.
+        save_path: str, default="../results/dataset.csv"
+            Where to save the resulting dataset.
+        *args, **kwargs: any
+            Arguments passed to the fit method of the BaseParallelValueEstimator.
+        """
+        self.data_state = np.empty((size,) + self.state_shape)
+        self.data_response = np.empty(size)
+        self.data_target = np.empty(size)
+        self.index = 0
+        print("Creating dataset of {} observations.".format(size))
+        self.fit(env_cls, permutations=permutations, total_steps=size, env_params=env_params, *args, **kwargs)
+        print("Dataset created.")
+        if save:
+            self.save_data(path=save_path)
+
+    def _process_experience(self, experience):
+        """Store results of a task in a table."""
+        try:
+            self.data_state[self.index, :] = experience["state"]
+            self.data_response[self.index] = experience["response"]
+            self.data_target[self.index] = experience["target"]
+            self.index += 1
+        except IndexError:
+            # if data template is full, skip remaining experiences.
+            pass
+
+    def save_data(self, path="../results/dataset.csv"):
+        """Save the created data as a csv file."""
+        df = pd.DataFrame(
+            np.concatenate([self.data_state, self.data_response.reshape(-1, 1), self.data_target.reshape(-1, 1)], axis=1),
+            columns=["state_{}".format(j) for j in range(self.data_state.shape[1])] + ["response", "target"]
+        )
+        df.to_csv(path, index=False)
+        print("Dataset saved at {}".format(path))
+
+
 class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
     """Class that gathers experiences (values) from states using parallel workers and trains a
     neural network to predict them.
@@ -404,7 +492,7 @@ class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
     def __init__(self, memory, n_neurons=1024, n_layers=4, quantiles=False, num_atoms=51,
                  activation="relu", optimization="adam", learning_rate=1e-4, name="NeuralEstimator",
                  gradient_clip=None, train_frequency=4, warmup_steps=50000, batch_size=64,
-                 log=True,  logdir="./log/value_estimation", *args, **kwargs):
+                 kappa=1, log=True, logdir="./log/value_estimation", *args, **kwargs):
 
         self.memory = memory
         self.n_neurons = n_neurons
@@ -418,6 +506,7 @@ class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
         self.batch_size = batch_size
         self.train_frequency = train_frequency
         self.warmup_steps = warmup_steps
+        self.kappa = kappa
         BaseParallelValueEstimator.__init__(self, *args, **kwargs)
         BaseAgent.__init__(self, None, learning_rate=learning_rate, logdir=logdir, log=log,\
                            log_prefix=self.name + "_run")
@@ -439,7 +528,11 @@ class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
                     n_layers=self.n_layers, n_neurons=self.n_neurons,
                     activation=self.activation
                 )
-                raise NotImplementedError("Quantile Regression not implemented yet.")
+
+                self.targets = tf.reshape(tf.tile(self.values_ph, [1, self.num_atoms]), (-1, self.num_atoms))
+                self.quantile_predictions = tf.reshape(self.value_prediction, (-1, self.num_atoms))
+                self.errors = tf.subtract(tf.stop_gradient(self.targets), self.quantile_predictions)
+                self.loss = quantile_huber_loss(self.errors, kappa=self.kappa, three_dims=False)
 
             # Regular Regression
             else:
@@ -465,6 +558,9 @@ class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
             self.summary_writer = tf.summary.FileWriter(self.logdir, self.session.graph)
 
         self.session.run(tf.global_variables_initializer())
+        # debug:
+        shapes = [tf.shape(self.targets), tf.shape(self.quantiles)]
+        print(self.session.run(shapes, feed_dict={self.states_ph: np.random.randint(0, 2, size=(64, 17)), self.values_ph: np.random.sample(size=(64, 1))}))
 
     def process_random_experience(self, experience):
         """Process an experience by storing it in memory and (at training time) sampling a
@@ -495,6 +591,7 @@ class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
                     }
                 )
                 self.summary_writer.add_summary(summary, self.global_counter)
+
             # or just train
             else:
                 self.session.run(
