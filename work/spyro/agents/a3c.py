@@ -91,7 +91,7 @@ class A3CWorker(mp.Process):
 
     def __init__(self, env_cls, global_T, global_queue, global_weights, weight_shapes,
                  policy, tmax=16, total_steps=1000000, name="A3C_Worker",
-                 beta=0.01, gamma=0.9, returns="mc_mean", td_steps=10, n_layers=2, n_neurons=512,
+                 beta=0.01, gamma=0.9, returns="n_step_td", td_steps=10, n_layers=2, n_neurons=512,
                  activation="relu", learning_rate=1e-3, env_params=None, logdir="log", log=True):
 
         # init Process
@@ -387,7 +387,7 @@ class A3CAgent(BaseAgent):
         }
     }
 
-    def __init__(self, policy, name="A3C_Agent", beta=0.05, returns="mc_mean", td_steps=10,
+    def __init__(self, policy, name="A3C_Agent", beta=0.05, returns="mc_mean", td_steps=16,
                  n_layers=3, n_neurons=512, activation="relu", max_queue_size=10,
                  *args, **kwargs):
 
@@ -478,7 +478,8 @@ class A3CAgent(BaseAgent):
     def get_weights(self):
         return self.session.run(self.var_list)
 
-    def fit(self, env_cls, env_params=None, tmax=32, total_steps=50000, n_workers=-1, restart=True, verbose=True):
+    def fit(self, env_cls, env_params=None, tmax=32, total_steps=50000, n_workers=-1,
+            restart=True, verbose=True):
         """Train the A3C Agent on the environment.
 
         Parameters
@@ -663,8 +664,8 @@ class A3CAgent(BaseAgent):
             "policy": self.policy.get_config(),
             "beta": self.beta,
             "gamma": self.gamma,
-            "td_lambda": self.td_steps,
-            "return_func": self.return_func,
+            "td_steps": self.td_steps,
+            "returns": self.return_func,
             "learning_rate": self.learning_rate,
             "n_layers": self.model_params["n_layers"],
             "n_neurons": self.model_params["n_neurons"],
