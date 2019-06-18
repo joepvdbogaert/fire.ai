@@ -14,6 +14,7 @@ import cProfile
 
 from abc import abstractmethod
 from itertools import product
+from scipy.stats import wasserstein_distance
 
 from spyro.utils import make_env, obtain_env_information
 from spyro.builders import build_mlp_regressor, build_distributional_dqn
@@ -765,7 +766,8 @@ class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
         elif metric == "rmse":
             loss = np.sqrt(np.square(Y - Y_hat).mean())
         elif metric == "wasserstein":
-            raise NotImplementedError("Wasserstein metric not implemented yet.")
+            assert raw_quantiles, "Wasserstein distance is only relevant when raw_quantiles=True"
+            loss = np.mean([wasserstein_distance(Y[i, :], Y_hat[i, :]) for i in range(len(Y))])
 
         progress("Evaluation score ({}): {}".format(metric, loss), verbose=self.verbose)
         return loss
