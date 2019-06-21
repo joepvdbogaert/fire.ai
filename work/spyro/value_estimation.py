@@ -666,7 +666,7 @@ class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
 
         if self.quantiles:
             Y_hat = self.predict_quantiles(X, batch_size=batch_size)
-            return Y_hat.mean(axis=1)
+            return Y_hat.mean(axis=1).reshape(-1, 1)
         elif batch_size is None:
             return self.session.run(self.value_prediction, feed_dict={self.states_ph: X})
         else:
@@ -681,7 +681,7 @@ class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
 
     def fit(self, env_cls, epochs=100, steps_per_epoch=100000, warmup_steps=50000,
             validation_freq=1, val_batch_size=10000, validation_data=None, permutations=False,
-            env_params=None, metric="mae", verbose=True, save_freq=0, *args, **kwargs):
+            env_params=None, metric="mae", eval_quants=False, verbose=True, save_freq=0, *args, **kwargs):
         """Fit the estimator on the environment.
 
         Parameters
@@ -704,9 +704,25 @@ class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
             according to distributions in the simulation (False).
         env_params: dict
             Parameters passed to env_cls upon initialization.
+        metric: str, default='mae'
+            Metric to use for evaluation. One of ['mae', 'mse', 'rmse' 'wasserstein'].
+        eval_quants: bool, default=False
+            Whether to evaluate on quantile values directly (True) or on expectation (False).
+            Only relevant when self.quantiles=True.
+        verbose: bool, default=True
+            Whether to print progress updates.
+        save_freq: int, default=0
+            After how many epochs to save the model weights to the log directory.
+            If save_freq=0 or self.log=False, does not save.
         *args, **kwargs: any
             Parameters passed to perform_tasks or gather_random_experiences.
         """
+        def is_time(bool_, freq):
+            if bool_ and (freq > 0):
+                if epoch % freq == 0:
+                    return True
+            return False
+
         if warmup_steps is not None:
             self.warmup_steps = warmup_steps
         self.verbose = verbose
@@ -724,18 +740,21 @@ class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
                                                start_step=epoch*steps_per_epoch, *args, **kwargs)
 
             # evaluate
-            if validate and (epoch % validation_freq == 0):
-                loss = self.evaluate(val_x, val_y, metric=metric, raw_quantiles=False, batch_size=val_batch_size, verbose=False)
-                progress("Epoch {}/{}. Val score: {}".format(epoch + 1, epochs, loss))
+            if is_time(validate, validation_freq):
+                loss = self.evaluate(val_x, val_y, metric=metric, raw_quantiles=eval_quants,
+                                     batch_size=val_batch_size, verbose=False)
+                progress("Epoch {}/{}. Val score: {}".format(epoch + 1, epochs, loss), verbose=verbose)
 
-            if (epoch % save_freq == 0) and (save_freq > 0) and self.log:
+            # save weights
+            if is_time(self.log, save_freq):
                 self.save_weights()
 
-        progress("Completed {} epochs of training.".format(epochs))
+        progress("Completed {} epochs of training.".format(epochs), verbose=verbose)
 
-        if epochs % validation_freq != 0:
-            loss = self.evaluate(val_x, val_y, metric=metric, raw_quantiles=False, batch_size=val_batch_size, verbose=False)
-            progress("Final validation score: {}")
+        if validate and (epochs % validation_freq != 0):  # if not validated after the last epoch
+            loss = self.evaluate(val_x, val_y, metric=metric, raw_quantiles=eval_quants,
+                                 batch_size=val_batch_size, verbose=False)
+            progress("Final validation score: {}", verbose=verbose)
 
     def evaluate(self, X, Y, metric="mae", raw_quantiles=False, batch_size=10000, verbose=True):
         """Evaluate on provided data after training.
