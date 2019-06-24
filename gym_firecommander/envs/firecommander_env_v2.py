@@ -7,7 +7,7 @@ from gym_firecommander.envs import FireCommanderBigEnv
 
 class FireCommanderV2(FireCommanderBigEnv):
 
-    def __init__(self, reward_func='scaled_spare_time', worst_response=2100):
+    def __init__(self, reward_func='scaled_spare_time', worst_response=2100, W=30):
         super().__init__(reward_func=reward_func, worst_response=worst_response)
         # adjust action space: we only choose the origin station
         # the state space gets an additional array to indicate the destination
@@ -18,6 +18,7 @@ class FireCommanderV2(FireCommanderBigEnv):
 
         self.destination_candidates = []
         self.current_dest = None
+        self.W = W
 
     def step(self, action):
         """Take one step in the environment and give back the results.
@@ -41,11 +42,16 @@ class FireCommanderV2(FireCommanderBigEnv):
                 Possible additional info about what happened.
         """
         valid = self._take_action(action)
-        self.last_action = (None, None) if action == self.num_stations else \
-                (action, self.current_dest)
+        if action == self.num_stations:
+            reloc_time = 0.
+            self.reward = 0.
+            self.last_action = (None, None)
+        else:
+            self.last_action = (action, self.current_dest)
+            reloc_time = self.sim.get_relocation_time(self.station_names[action], self.station_names[self.current_dest])
+            self.reward = self._get_reward(reloc_time / self.W, 0, valid=True)
 
         # go to next incident if all destinations have been decided on
-        self.reward = 0.0
         while len(self.destination_candidates) == 0:
 
             # simulate until TS response needed
