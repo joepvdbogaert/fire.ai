@@ -607,3 +607,68 @@ def plot_faceted_barplot_of_vehicle_positions(data, y="station", x="vehicles",
 
     g.fig.tight_layout()
     return g.fig
+
+
+def load_tables(*paths):
+    """Read multiple tables from disk and return them in a list.
+
+    Parameters
+    ----------
+    paths: str
+        The paths to table files to load."""
+    return [pickle.load(open(p, "rb")) for p in paths]
+
+
+def append_arrays_in_dicts(*dikts, keys=["responses", "targets"]):
+    """Create a dictionary with arrays appended from multiple dictionaries.
+
+    Parameters
+    ----------
+    dikts: dict
+        The dictionaries to merged.
+    keys: list, str, default=['responses', 'targets']
+        The keys in the dictionaries that point to arrays that should be appended.
+    """
+    return {k: np.concatenate([d[k] for d in dikts]) for k in keys}
+
+
+def merge_tables(*tables, to_quantiles=True, key="responses", num_quantiles=51, save_path=None):
+    """Merge multiple tables into one big one.
+
+    Parameters
+    ----------
+    tables: dict
+        The tables to merge. Should all have the same set of keys / states.
+    to_quantiles: bool, default=True
+        Whether to calculate quantiles over the obtained values rather than keep the raw ones.
+    key: str, default="responses"
+        If to_quantiles=True, the key is the key in the inner dictionary that points to the array
+        over which to compute quantiles. If to_quantiles=False, key is the (list of) keys for which
+        arrays of different tables should be appended.
+    num_quantiles: int, default=51
+        The number of quantiles to compute when to_quantiles=True.
+    save_path: str, default=None
+        The path to save the resulting table. If None, does not save.
+
+    Returns
+    -------
+    merged_table: dict
+        The merged table.
+    """
+    assert len(tables) > 1, "Must provide more than one table"
+    assert set(tables[0].keys()) == set(tables[0].keys()), "Keys are not the same for all tables"
+
+    merged = tables[0]
+    for i, state in enumerate(tables[0].keys()):
+        progress("Merging results for state {} / {}.".format(i + 1, len(merged)), same_line=True, newline_end=(i + 1 == len(merged)))
+        merged[state] = append_arrays_in_dicts(*[t[state] for t in tables], keys=key if isinstance(key, list) else [key])
+
+    if to_quantiles:
+        progress("Obtaining quantiles for '{}''".format(key))
+        merged = get_table_quantiles(merged, num_quantiles=num_quantiles, inner_key=key)
+
+    if save_path is not None:
+        pickle.dump(merged, open(save_path, "wb"))
+        progress("Merged table save at {}".format(save_path))
+
+    return merged
