@@ -57,10 +57,11 @@ class BaseAgent(object):
 
         print("Model and agent settings saved in {}.".format(path))
 
-    def load_weights(self, path, env_cls, env_params=None):
+    def load_weights(self, path, env_cls=None, env_params=None):
         """Load previously fitted weights."""
-        self.action_shape, self.n_actions, self.obs_shape, _ = \
-                    obtain_env_information(env_cls, env_params)
+        if env_cls is not None:
+            self.action_shape, self.n_actions, self.obs_shape, _ = \
+                        obtain_env_information(env_cls, env_params)
         tf.reset_default_graph()
         self._init_graph()
         self.saver = tf.train.Saver()
