@@ -27,6 +27,9 @@ from spyro.utils import progress
 NUM_STATIONS = 17
 FIRECOMMANDERV2_MAX_VEHICLES = [2, 2, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 1, 1, 1]
 FIRECOMMANDERV2_MAX_VEHICLES_DAY_HOUR = FIRECOMMANDERV2_MAX_VEHICLES + [6, 23]
+STATION_NAMES = ['AALSMEER', 'AMSTELVEEN', 'ANTON', 'DIEMEN', 'DIRK', 'DRIEMOND',
+                 'DUIVENDRECHT', 'HENDRIK', 'IJSBRAND', 'NICO', 'OSDORP', 'PIETER',
+                 'TEUNIS', 'UITHOORN', 'VICTOR', 'WILLEM', 'ZEBRA']
 
 
 def extract_vehicles_from_state(state):
@@ -57,7 +60,7 @@ class BaseParallelValueEstimator(object):
             self.num_workers = mp.cpu_count()
         else:
             self.num_workers = num_workers
-        progress("Using {} workers".format(self.num_workers), verbose=self.verbose)
+        # progress("Using {} workers".format(self.num_workers), verbose=self.verbose)
 
         # other parameters
         self.max_queue_size = max_queue_size
@@ -522,7 +525,7 @@ class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
         self.train_frequency = train_frequency
         self.warmup_steps = warmup_steps
         self.kappa = kappa
-        BaseParallelValueEstimator.__init__(self, *args, **kwargs)
+        BaseParallelValueEstimator.__init__(self, name=name, *args, **kwargs)
         BaseAgent.__init__(self, None, learning_rate=learning_rate, logdir=logdir, log=log,\
                            log_prefix=self.name + "_run")
 
@@ -679,6 +682,18 @@ class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
             ]
             return np.concatenate(outputs, axis=0)
 
+    def create_predicted_table(self):
+        """Create a table like the TabularValueEstimator from predicted quantiles or means."""
+        tasks = self.define_tasks()
+        # create array of states to predict
+        X = np.array([list(task["state"]) for task in tasks])
+        if self.quantiles:
+            Y_hat = self.predict_quantiles(X)
+        else:
+            Y_hat = self.predict(X)
+
+        return {tuple(task["state"]): Y_hat[i, :] for i, task in enumerate(tasks)}
+
     def fit(self, env_cls, epochs=100, steps_per_epoch=100000, warmup_steps=50000,
             validation_freq=1, val_batch_size=10000, validation_data=None, permutations=False,
             env_params=None, metric="mae", eval_quants=False, verbose=True, save_freq=0, *args, **kwargs):
@@ -730,6 +745,8 @@ class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
         if (validation_data is not None) and (validation_freq > 0):
             val_x, val_y = validation_data
             validate = True
+        else:
+            validate = False
 
         for epoch in range(epochs):
             # train
@@ -789,6 +806,31 @@ class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
             loss = np.mean([wasserstein_distance(Y[i, :], Y_hat[i, :]) for i in range(len(Y))])
 
         progress("Evaluation score ({}): {}".format(metric, loss), verbose=self.verbose)
+        return loss
+
+    def evaluate_on_quantiles(self, quantile_table):
+        """Evaluate the trained quantile estimator on simulated quantiles rather than
+        individual observations.
+
+        Parameters
+        ----------
+        quantile_table: dict
+            Must have states as keys and arrays of quantile values as values. These quantile
+            values must represent the same quantiles as the estimator has learned and must
+            thus be of the same length.
+
+        Returns
+        -------
+        wasserstein_distance: float
+            The Wasserstein distance between the learned and provided distributions.
+        """
+        predicted_quantiles = self.create_predicted_table()
+        # assure quantiles are in the same order
+        Y_hat = np.array([predicted_quantiles[state] for state in quantile_table.keys()])
+        Y = np.array(list(quantile_table.values()))
+        # calculate Wasserstein distance
+        loss = np.mean([wasserstein_distance(Y[i, :], Y_hat[i, :]) for i in range(len(Y))])
+        progress("Wasserstein distance: {}".format(loss), verbose=self.verbose)
         return loss
 
     def get_config(self):
