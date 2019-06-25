@@ -15,8 +15,9 @@ from spyro.policies import (
 from spyro.agents import (
     DQNAgent,
     A3CAgent,
-    QuantileRegressionDQNAgent
+    QuantileRegressionDQNAgent,
 )
+from spyro.value_estimation import NeuralValueEstimator
 
 
 POLICY_MAP = {
@@ -36,7 +37,8 @@ MEMORY_MAP = {
 AGENT_MAP = {
     "DQN_Agent": DQNAgent,
     "A3C_Agent": A3CAgent,
-    "QR_DQN_Agent": QuantileRegressionDQNAgent    
+    "QR_DQN_Agent": QuantileRegressionDQNAgent,
+    "NeuralEstimator": NeuralValueEstimator
 }
 
 
@@ -92,6 +94,8 @@ def init_agent_from_config(config_path, force_no_log=False):
         agent = agent_cls(policy, memory, **config)
     elif has_policy:
         agent = agent_cls(policy, **config)
+    elif has_memory:
+        agent = agent_cls(memory, **config)
     else:
         agent = agent_cls(**config)
 
@@ -119,7 +123,7 @@ def load_trained_agent(dirpath, env_cls, env_params=None, **kwargs):
     """
     config_path = os.path.join(dirpath, "agent_config.json")
     agent = init_agent_from_config(config_path, **kwargs)
-    agent.load_weights(os.path.join(dirpath, "model.ckpt"), env_cls, env_params=env_params)
+    agent.load_weights(os.path.join(dirpath, "model.ckpt"), env_cls=env_cls, env_params=env_params)
     progress("Agent's weights loaded.")
     return agent
 
@@ -208,3 +212,57 @@ def construct_test_log_from_episodes(test_episodes, log_columns=LOG_COLUMNS):
         df[col] = df[col].astype(np.float)
 
     return df
+
+
+def evaluate_quantile_estimator(model, table_path):
+    """Evaluate a Quantile Regression Value Estimator on a table of 'true' quantiles.
+
+    Parameters
+    ----------
+    model: NeuralValueEstimator
+        The trained model to evaluate.
+    table_path: str
+        The path to the table to evaluate on.
+
+    Returns
+    -------
+    wasserstein: float
+        The mean Wasserstein distances between the learned and provided distributions.
+    """
+    quantile_table = pickle.load(open(table_path, "rb"))
+    loss = model.evaluate_on_quantiles(quantile_table)
+    return loss
+
+
+def evaluate_saved_quantile_estimator(model_dir, table_path=None, quantile_table=None):
+    """Load a trained and saved agent from disk and evaluate it on a test environment.
+
+    Parameters
+    ----------
+    model_dir: str
+        The path to the directory in which the model parameters and agent config
+        file are stored.
+    table_path: str, default=None
+        The path to the table to evaluate on. Ignored if quantile_table is provided
+        directly.
+    quantile_table: dict, default=None
+        The table to evaluate on. If None, a path must be provided to load the table.
+
+    Returns
+    -------
+    wasserstein: float
+        The mean Wasserstein distances between the learned and provided distributions.
+    """
+    assert (table_path is not None) or (quantile_table is not None), \
+        "One of 'table_path' and 'quantile_table' must be provided."
+
+    # load table if not provided directly
+    if quantile_table is None:
+        quantile_table = pickle.load(open(table_path, "rb"))
+
+    # load model
+    model = load_trained_agent(model_dir, None)
+
+    # evaluate
+    loss = model.evaluate_on_quantiles(quantile_table)
+    return loss
