@@ -3,6 +3,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pickle
+from spyro.utils import progress
 
 
 def set_sns_params(font_scale=1.2, **kwargs):
