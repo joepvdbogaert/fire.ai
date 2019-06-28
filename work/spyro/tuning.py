@@ -183,7 +183,11 @@ def tune_agent(agent_cls, env_cls, params, *args, env_params=None, fit_params=No
     if save:
         pickle.dump(results, open(write_to, "wb"))
 
-    best = np.argmax(results["scores"])
+    if maximize:
+        best = np.argmax(results["scores"])
+    else:
+        best = np.argin(results["scores"])
+
     best_params, best_score = results["params"][best], results["scores"][best]
 
     return best_params, best_score
