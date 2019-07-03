@@ -3,7 +3,18 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pickle
+
 from spyro.utils import progress
+from spyro.value_estimation import STATION_NAMES
+
+try:
+    from fdsim.helpers import lonlat_to_xy
+except:
+    progress("fdsim not installed, some functions might not work.")
+try:
+    import geopandas as gpd
+except:
+    progress('geopandas not installed, some functions might not work.')
 
 
 def set_sns_params(font_scale=1.2, **kwargs):
@@ -100,7 +111,7 @@ def group_states_by_num_relocations(table, state, max_relocs=None):
     if max_relocs is None:
         max_relocs = max(nums)
 
-    tables_dict = {n: {} for n in range(max_relocs + 1)}
+    tables_dict = {n: {} for n in range(1, max_relocs + 1)}
     for i, (key, value) in enumerate(table.items()):
         try:
             tables_dict[nums[i]][key] = value
@@ -500,7 +511,7 @@ def get_station_occurences_from_grouped_table(table_dict, inner_key=None,
 
 def plot_heatmap_of_vehicle_positions(data, x="station", y="total vehicles", values="vehicles",
                                       ax=None, title="Station occupancy among best 10 states",
-                                      *args, **kwargs):
+                                      max_y=16, *args, **kwargs):
     """Plot a heatmap of how often stations are occupied in the states in the data.
 
     Parameters
@@ -512,6 +523,10 @@ def plot_heatmap_of_vehicle_positions(data, x="station", y="total vehicles", val
         Columns to use at the x and y axes and as values in the heatmap.
     ax: matplotlib.Axis, default=None
         Axis to plot on. If None, creates new.
+    title: str, default='Station occupancy among best 10 states'
+        The title of the plot.
+    max_y: int, default=16
+        The maximum number of vehicles to plot.
     *args, **kwargs: any
         Parameters of `sns.heatmap`.
 
@@ -520,10 +535,17 @@ def plot_heatmap_of_vehicle_positions(data, x="station", y="total vehicles", val
     fig: matplotlib.pyplot.figure
         The heatmap.
     """
+    sns.set(font_scale=1.6)
     fig, ax = plt.subplots(figsize=(15, 10))
     pivoted = pd.pivot_table(data, index=x, columns=y, values=values)
+
+    if max_y is not None:
+        pivoted = pivoted.loc[:, pivoted.columns <= max_y]
+
     ax = sns.heatmap(pivoted, ax=ax, cmap="YlGnBu", *args, **kwargs)
     ax.set_title(title, weight="bold", size=20, pad=20)
+
+    fig.tight_layout()
     return fig
 
 
@@ -674,3 +696,136 @@ def merge_tables(*tables, to_quantiles=True, key="responses", num_quantiles=51, 
         progress("Merged table save at {}".format(save_path))
 
     return merged
+
+
+def get_station_coords(path, station_col="kazerne"):
+    """Obtain x, y coordinates for each station.
+
+    Parameters
+    ----------
+    path: str
+        The path to the station location Excel file.
+    station_col: str, default='kazerne'
+        The column in the station data that gives the station names or IDs.
+
+    Returns
+    -------
+    coord_dict: dict
+        The coordinates like {'STATION_NAME' -> (x, y)}.
+    """
+    station_locations = pd.read_excel(path, sep=";", decimal=".")
+    station_locations[["x", "y"]] = station_locations[["lon", "lat"]].apply(
+                lambda x: lonlat_to_xy(x[0], x[1]), axis=1).apply(pd.Series)
+
+    coord_dict = {}
+    for i, station in enumerate(station_locations[station_col]):
+        coord_dict[station.upper()] = tuple(station_locations[['x', 'y']].iloc[i])
+
+    return coord_dict
+
+
+def plot_state_on_map(state, geo_df, coords, station_names=STATION_NAMES,
+                      annotate=True, figsize=None, ax=None):
+    """Plot a state on the map, showing which stations are occupied or empty.
+
+    Parameters
+    ----------
+    state: tuple
+        The station occupancy.
+    geo_df: geopandas.DataFrame
+        The polygons of the underlying map.
+    coords: dict
+        Coordinates of the stations in a dictionary like {STATION -> (x, y)}.
+    station_names: list-like, default=spyro.value_estimation.STATION_NAMES
+        The names of the stations corresponding to `state`.
+    annotate: bool, default=True
+        Whether to print station names on the map.
+    figsize: tuple, default=None
+        The figure size.
+    ax: matplotlib.pyplot.Axes, default=None
+        The Axis to plot on. If None, creates new one.
+
+    Returns
+    -------
+    ax: Axis
+        The plotted map.
+    """
+    sns.set(style="white")
+    ax = geo_df.plot(figsize=figsize, alpha=0.3, ax=ax)
+
+    x = [coords[s][0] for s in station_names]
+    y = [coords[s][1] for s in station_names]
+    sizes = [100 if x > 0 else 5 for x in state]
+    pal = sns.color_palette("RdBu", n_colors=7)
+    ax.scatter(x, y, c=list(state), s=sizes, cmap="RdBu")
+
+    if annotate:
+        for i, txt in enumerate(station_names):
+            if state[i] > 0:
+                ax.annotate(txt, (x[i]+300, y[i] + 100), size=9)
+            else:
+                ax.annotate(txt, (x[i]+300, y[i] + 100), color='grey', size=9)
+
+    ax.set_xticks([])
+    ax.set_yticks([])
+    sns.despine(ax=ax, left=True, bottom=True)
+    return ax
+
+
+def map_plot_facet_wrapper(states, geo_df=None, coords=None, ax=None, annotate=False, *args, **kwargs):
+    """Wrap `plot_state_on_map` with a signature suitable for sns.FacetGrid."""
+    ax = plt.gca()
+    _ = plot_state_on_map(states.values[0], geo_df, coords, ax=ax, annotate=annotate)
+
+
+def plot_best_states_on_map(table, geopath="../../Data/geoData/vakken_dag_ts.geojson",
+                            stationpath="../../Data/kazernepositie en voertuigen.xlsx",
+                            station_names=STATION_NAMES, min_count=0, max_count=16,
+                            inner_key=None, minimum=True, top=0.92):
+    """Plot the best configuration of vehicles on a map for each possible vehicle count.
+
+    Parameters
+    ----------
+    table: dict
+        Table of state-values like {'state' -> [value1, value2, ..., ...]}. Can be quantiles.
+    geopath: str, default='../../Data/geoData/vakken_dag_ts.geojson'
+        The path to the underlying map polygons.
+    stationpath: str, default="../../Data/kazernepositie en voertuigen.xlsx"
+        Path to the station coordinate data.
+    station_names: list-like, default=spyro.value_estimation.STATION_NAMES
+        The names of the stations corresponding to `state`.
+    min_count, max_count: int, default=0, 16
+        The min and max number of total vehicles to plot the best state for.
+    inner_key, minimum: any
+        Passed to `get_best_state_by_vehicle_count`.
+
+    Returns
+    -------
+    fig: matplotlib.Figure
+        The Faceted plot of configurations.
+    """
+    # load data
+    stationcoords = get_station_coords(stationpath)
+    geodf = gpd.read_file(geopath)
+
+    # get best states and filter
+    best_by_count = get_best_state_by_vehicle_count(table, inner_key=inner_key, minimum=minimum)
+    if min_count is not None:
+        best_by_count = {k: v for k, v in best_by_count.items() if k >= min_count}
+    if max_count is not None:
+        best_by_count = {k: v for k, v in best_by_count.items() if k <= max_count}
+
+    df = pd.DataFrame.from_dict(best_by_count, orient='index')
+    df.index.name = "vehicles"
+    df = df.reset_index(drop=False)
+
+    # plot
+    sns.set(style="white")
+    g = sns.FacetGrid(data=df, col="vehicles", col_wrap=4)
+    g.map(map_plot_facet_wrapper, "state", geo_df=geodf, coords=stationcoords)
+    g.fig.suptitle("Best vehicle configuration per number of vehicles", weight="bold", size=18)
+    for ax in g.axes:
+        ax.set_xlabel('')
+    g.fig.tight_layout()
+    g.fig.subplots_adjust(top=top, wspace=0.01, hspace=0.01)
+    return g.fig
