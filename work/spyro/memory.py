@@ -67,5 +67,6 @@ class ReplayBuffer(BaseMemory):
     def get_config(self):
         return {
             "name": self.name,
-            "size": self.size
+            "size": self.size,
+            "keys": self.keys
         }

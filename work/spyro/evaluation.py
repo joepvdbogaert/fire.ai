@@ -85,7 +85,7 @@ def init_agent_from_config(config_path, force_no_log=False):
     try:
         memory_config = config.pop("memory")
         has_memory = True
-        memory = ReplayBuffer(memory_config["size"])
+        memory = ReplayBuffer(**memory_config)
     except KeyError:
         has_memory = False
 
