@@ -724,8 +724,9 @@ def get_station_coords(path, station_col="kazerne"):
     return coord_dict
 
 
-def plot_state_on_map(state, geo_df, coords, station_names=STATION_NAMES,
-                      annotate=True, figsize=None, ax=None):
+def plot_state_on_map(state, geo_df, coords, prev_state=None, station_names=STATION_NAMES,
+                      annotate=True, figsize=None, ax=None, yshift=450,
+                      shift_stations=["HENDRIK", "ANTON"]):
     """Plot a state on the map, showing which stations are occupied or empty.
 
     Parameters
@@ -750,21 +751,41 @@ def plot_state_on_map(state, geo_df, coords, station_names=STATION_NAMES,
     ax: Axis
         The plotted map.
     """
-    sns.set(style="white")
+    def map_color(old, new, palette):
+        if old == new:
+            return palette[0]
+        elif new == 0:
+            return palette[1]
+        else:
+            return palette[2]
+
+    def annotate_station(j, txt, condition=True, size=9, grey=False):
+        txt_color = 'grey' if grey else 'black'
+        if condition:
+            if station_names[j] in shift_stations:
+                ax.annotate(txt, (x[j], y[j]), xytext=(x[j]+100, y[j]+100 + yshift), size=9, color=txt_color)
+            else:
+                ax.annotate(txt, (x[j], y[j]), xytext=(x[j]+100, y[j]+100), size=9, color=txt_color)
+
+    if prev_state is None:
+        prev_state = state
+
     ax = geo_df.plot(figsize=figsize, alpha=0.3, ax=ax)
 
     x = [coords[s][0] for s in station_names]
     y = [coords[s][1] for s in station_names]
-    sizes = [100 if x > 0 else 5 for x in state]
-    pal = sns.color_palette("RdBu", n_colors=7)
-    ax.scatter(x, y, c=list(state), s=sizes, cmap="RdBu")
+    sizes = [100 if v > 0 else 15 for v in state]
 
-    if annotate:
-        for i, txt in enumerate(station_names):
-            if state[i] > 0:
-                ax.annotate(txt, (x[i]+300, y[i] + 100), size=9)
-            else:
-                ax.annotate(txt, (x[i]+300, y[i] + 100), color='grey', size=9)
+    colors = sns.color_palette('tab10', 3)
+    c = [map_color(prev_state[v], state[v], colors) for v in range(len(state))]
+    ax.scatter(x, y, c=c, s=sizes)
+
+    # annotate stations with names
+    for i, txt in enumerate(station_names):
+        if annotate == 'changed':
+            annotate_station(i, txt, condition=(state[i] != prev_state[i]), grey=False)
+        elif annotate:
+            annotate_station(i, txt, grey=state[i] == 0)
 
     ax.set_xticks([])
     ax.set_yticks([])
