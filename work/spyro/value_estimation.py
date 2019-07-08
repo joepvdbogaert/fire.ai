@@ -51,9 +51,10 @@ class BaseParallelValueEstimator(object):
     """
 
     def __init__(self, num_workers=-1, max_queue_size=100, include_time=False, name="ValueEstimator",
-                 verbose=True):
+                 strategy='random', verbose=True):
         """Initialize general parameters."""
         self.verbose = verbose
+        self.strategy = strategy
 
         # set number of worker processes
         if num_workers == -1:
@@ -153,7 +154,7 @@ class BaseParallelValueEstimator(object):
             ExperienceGatheringProcess(
                 env_cls, self.result_queue, task_queue=self.task_queue,
                 env_params=env_params, state_processor=self.state_processor,
-                tasks=True
+                strategy='tasks'
             )
             for _ in range(self.num_workers)
         ]
@@ -180,7 +181,8 @@ class BaseParallelValueEstimator(object):
             if worker.is_alive():
                 worker.join()
 
-    def gather_random_experiences(self, env_cls, total_steps=50000000, start_step=0, env_params=None, timeout=3):
+    def gather_random_experiences(self, env_cls, total_steps=50000000, start_step=0, env_params=None,
+                                  strategy='random', timeout=3):
         """Collect random experiences from parallel workers.
 
         Parameters
@@ -204,7 +206,7 @@ class BaseParallelValueEstimator(object):
             ExperienceGatheringProcess(
                 env_cls, self.result_queue, stop_indicator=self.stop_indicator,
                 env_params=env_params, state_processor=self.state_processor,
-                tasks=False
+                max_values=self.max_values, strategy=self.strategy
             )
             for _ in range(self.num_workers)
         ]
@@ -244,9 +246,9 @@ class BaseParallelValueEstimator(object):
 
         progress("Workers stopped gracefully.", verbose=self.verbose)
 
-    def fit(self, env_cls, permutations=False, env_params=None, *args, **kwargs):
+    def fit(self, env_cls, env_params=None, *args, **kwargs):
         """Fit the estimator on the environment."""
-        if permutations:
+        if self.strategy == 'tasks':
             self.perform_tasks(env_cls, env_params=None, *args, **kwargs)
         else:
             self.gather_random_experiences(env_cls, env_params=None, *args, **kwargs)
@@ -267,10 +269,17 @@ class BaseParallelValueEstimator(object):
 class ExperienceGatheringProcess(mp.Process):
     """Worker-class that gathers experiences from specific states to obtain
     estimates of state-values.
+
+    Parameters
+    ----------
+    strategy: str, one of ['random', 'tasks', 'uniform']
+        If random, do not manipulate states. If 'tasks', process dictionaries with tasks and
+        reps specified. If uniform, sample uniformly over all possible states and return results
+        one-by-one.
     """
 
     def __init__(self, env_cls, result_queue, task_queue=None, stop_indicator=None,
-                 state_processor=None, tasks=False, env_params=None, timeout=5,
+                 state_processor=None, max_values=None, strategy='random', env_params=None, timeout=5,
                  verbose=False):
         super().__init__()
         self.env_cls = env_cls
@@ -279,23 +288,31 @@ class ExperienceGatheringProcess(mp.Process):
         self.result_queue = result_queue
         self.state_processor = state_processor
         self.stop_indicator = stop_indicator
-        self.tasks = tasks
+        self.strategy = strategy
+        self.max_values = max_values
         self.timeout = timeout
         self.verbose = verbose
 
-        if self.tasks:
-            assert task_queue is not None, "Must provide a task_queue if tasks=True"
-        else:
-            assert stop_indicator is not None, "Must provide a stop_indicator if tasks=False"
+        if self.strategy == 'tasks':
+            assert task_queue is not None, "Must provide a task_queue if strategy='tasks'"
+        if self.strategy != 'tasks':
+            assert stop_indicator is not None, "Must provide a stop_indicator if strategy!='tasks"
+        if self.strategy == 'uniform':
+            assert max_values is not None, "max_values must be provided when strategy='uniform'"
 
         progress("Worker initialized.", verbose=self.verbose)
 
     def run(self):
         """Call the main functionality of the class."""
-        if self.tasks:
+        if self.strategy == 'tasks':
             self._run_tasks()
-        else:
+        elif self.strategy == 'uniform':
+            self._run_uniform()
+        elif self.strategy == 'random':
             self._run_randomly()
+        else:
+            raise ValueError("strategy should be one of ['random', 'tasks', 'uniform']. Got {}"
+                             .format(self.strategy))
 
     def _make_env(self):
         try:
@@ -348,6 +365,50 @@ class ExperienceGatheringProcess(mp.Process):
 
                 raw_state, done = self.env._extract_state(self.env._get_available_vehicles())
                 state = self.state_processor(raw_state)
+
+    def _run_uniform(self):
+        """Manipulate the state to ensure uniform sampling over all possible states."""
+        progress("Start sampling state values uniformly over states.", verbose=self.verbose)
+
+        # find all states and create a generator to sample efficiently
+        ranges = [np.arange(0, y + 1) for y in self.max_values]
+        all_states = np.array([x for x in product(*ranges)])
+        state_gen = self._state_generator(all_states, total_vehicles=np.sum(self.max_values))
+
+        # init env
+        self._make_env()
+
+        while self.stop_indicator.value != 1:
+
+            sampled_state, num_deployed = next(state_gen)
+
+            while True:
+                state = self.state_processor(self.env.reset(forced_vehicles=num_deployed))
+                self.manipulate_state(state, sampled_state)
+                response, target = self.env._simulate()
+                if (response is not None) and (response != np.inf):
+                    try:
+                        self.result_queue.put(
+                            {"state": sampled_state, "response": response, "target": target},
+                            block=True, timeout=self.timeout
+                        )
+                    except queue.Full:
+                        progress("Queue has been full for {} seconds. Breaking."
+                                 .format(self.timeout), verbose=self.verbose)
+
+                    break
+
+    def _state_generator(self, all_states, total_vehicles=21):
+        """Generate states uniformly."""
+        indices = np.random.randint(0, len(all_states), size=50000)
+        counter = 0
+        while True:
+            try:
+                s = all_states[indices[counter], :]
+                yield s, int(total_vehicles - np.sum(s))
+            except IndexError:
+                counter = 0
+                np.random.randint(0, len(all_states), size=50000)
 
     def perform_task(self, task):
         """Perform a given task."""
@@ -589,7 +650,7 @@ class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
         """
         # store experience in memory
         self.memory.store(copy.copy(experience["state"]), experience["response"], experience["target"])
-        
+
         # train at training time
         if (self.global_counter % self.train_frequency == 0) and (self.global_counter >= self.warmup_steps):
 
@@ -750,11 +811,8 @@ class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
 
         for epoch in range(epochs):
             # train
-            if permutations:
-                raise NotImplementedError("Training on all permutations is not implemented yet.")
-            else:
-                self.gather_random_experiences(env_cls, env_params=None, total_steps=steps_per_epoch,
-                                               start_step=epoch*steps_per_epoch, *args, **kwargs)
+            self.gather_random_experiences(env_cls, env_params=None, total_steps=steps_per_epoch,
+                                           start_step=epoch*steps_per_epoch, *args, **kwargs)
 
             # evaluate
             if is_time(validate, validation_freq):
