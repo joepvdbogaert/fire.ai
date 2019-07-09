@@ -634,7 +634,7 @@ class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
 
         if self.log:
             self.summary_op = tf.summary.scalar("loss", self.loss)
-            self.val_loss = tf.placeholder(tf.float64, shape=(), name="validation_loss")
+            self.val_loss = tf.placeholder(tf.float64, shape=())
             self.epoch_summary_op = tf.summary.scalar("validation_loss", self.val_loss)
             self.summary_writer = tf.summary.FileWriter(self.logdir, self.session.graph)
 
