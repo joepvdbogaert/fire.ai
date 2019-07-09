@@ -634,6 +634,8 @@ class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
 
         if self.log:
             self.summary_op = tf.summary.scalar("loss", self.loss)
+            self.val_loss = tf.placeholder(tf.float64, shape=(), name="validation_loss")
+            self.epoch_summary_op = tf.summary.scalar("validation_loss", self.val_loss)
             self.summary_writer = tf.summary.FileWriter(self.logdir, self.session.graph)
 
         self.session.run(tf.global_variables_initializer())
@@ -818,6 +820,7 @@ class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
             if is_time(validate, validation_freq):
                 loss = self.evaluate(val_x, val_y, metric=metric, raw_quantiles=eval_quants,
                                      batch_size=val_batch_size, verbose=False)
+                self._log_validation_loss(loss, epoch + 1)
                 progress("Epoch {}/{}. Val score: {}".format(epoch + 1, epochs, loss), verbose=verbose)
 
             # save weights
@@ -829,7 +832,13 @@ class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
         if validate and (epochs % validation_freq != 0):  # if not validated after the last epoch
             loss = self.evaluate(val_x, val_y, metric=metric, raw_quantiles=eval_quants,
                                  batch_size=val_batch_size, verbose=False)
+            self._log_validation_loss(loss, epoch + 1)
             progress("Final validation score: {}", verbose=verbose)
+
+    def _log_validation_loss(self, loss, epoch):
+        if self.log:
+            val_summary = self.session.run(self.epoch_summary_op, feed_dict={self.val_loss: loss})
+            self.summary_writer.add_summary(val_summary, epoch)
 
     def evaluate(self, X, Y, metric="mae", raw_quantiles=False, batch_size=10000, verbose=True):
         """Evaluate on provided data after training.
