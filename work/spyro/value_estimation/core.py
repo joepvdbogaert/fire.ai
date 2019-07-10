@@ -214,7 +214,7 @@ class BaseParallelValueEstimator(object):
                     self.process_random_experience(experience)
                     self.global_counter += 1
                     progress("Processed {} / {} experiences".format(self.global_counter, total_steps),
-                             same_line=True, newline_end=False, verbose=self.verbose)
+                             same_line=True, newline_end=False, verbose=self.global_counter % 1000 == 0)
                 except queue.Empty:
                     progress("\nQueue is empty. Breaking loop.", verbose=self.verbose)
                     break
