@@ -186,7 +186,7 @@ def tune_agent(agent_cls, env_cls, params, *args, env_params=None, fit_params=No
     if maximize:
         best = np.argmax(results["scores"])
     else:
-        best = np.argin(results["scores"])
+        best = np.argmin(results["scores"])
 
     best_params, best_score = results["params"][best], results["scores"][best]
 
