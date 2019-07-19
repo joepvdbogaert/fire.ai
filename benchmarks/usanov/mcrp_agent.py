@@ -54,7 +54,7 @@ def save_station_areas(save_path='./data/updated_kazerne_set.msg'):
 
 
 def create_new_rates_dict(incidents, kvt_path, station_mapping=STATION_NAME_TO_AREA, vehicle_type='TS',
-                          loc_col='hub_vak_bk', save=True, save_path='./data/updated_rates_dict.msg'):
+                          loc_col='hub_vak_bk', save=False, save_path='./data/updated_rates_dict.msg'):
     """Calculate the overall incident rates per service area and return / save them in the format
     required by the MCRP Agent.
 
@@ -83,7 +83,7 @@ def create_new_rates_dict(incidents, kvt_path, station_mapping=STATION_NAME_TO_A
     return rates
 
 
-def create_new_travel_time_input(path, areas, in_minutes=True, save=True, save_path='./data/updated_traveltimes.pickle'):
+def create_new_travel_time_input(path, areas, in_minutes=True, save=False, save_path='./data/updated_traveltimes.pickle'):
     """Create a matrix of travel / relocation times between the areas that have
     a fire station.
 
@@ -112,6 +112,87 @@ def create_new_travel_time_input(path, areas, in_minutes=True, save=True, save_p
     if save:
         pickle.dump(travel_times, open(save_path, 'wb'))
     return travel_times
+
+
+def build_rn(vaks, disp_order, kazerne_set, size):
+    """Construct response neighborhoods (RNs) for a given RN size (number of fire stations).
+
+    Parameters
+    ----------
+    vaks: array
+        The demand location IDs.
+    disp_order: pd.DataFrame
+        With columns 'vak', 'kazerne', and 'order', specifying the order of priority
+        in which an area ('vak') is served by the fire stations.
+    kazerne_set: list
+        The set of demand locations in which a station is positioned.
+    size: int
+        The size of the Response Neighborhood.
+    """
+    cols = np.concatenate((['vak_nr'], ['kazerne_' + s for s in map(str, np.arange(1, size + 1))]))
+    
+    # find 'size' closest stations for each square, order them alphabatically
+    rn_sets = pd.DataFrame(columns = cols)
+    for vak in vaks:
+        rn = disp_order[disp_order.vak == vak].sort_values(by=['order'])['kazerne'][0:size]
+        rn.sort_values()
+        rn = pd.DataFrame([tuple(np.concatenate(([vak],rn)))], columns = cols)
+        rn_sets = rn_sets.append(rn, ignore_index=True)
+    
+    # leave only unique combinations of the 'size' closest stations, create id for each unique RN
+    rn_set = rn_sets[['kazerne_' + s for s in map(str, np.arange(1, size + 1))]].drop_duplicates()
+    rn_set['rn_id'] = pd.Series(range(len(rn_set['kazerne_1'])), index=rn_set.index)
+    
+    # construct the incidence matrix
+    A = np.zeros((len(kazerne_set), rn_set.shape[0]))
+    for i in rn_set.index:
+        for j in range(len(kazerne_set)):
+            if (kazerne_set[j] in list(rn_set.loc[i][0:size])):
+                A[j, rn_set.loc[i][size]] = 1
+    return A
+
+
+def construct_rn_matrices(traveltimes, kazerne_set, save=False, save_path='./data/rn_matrices.pickle'):
+    """Construct the Response Neighborhoods matrices.
+
+    Parameters
+    ----------
+    traveltimes: pd.DataFrame
+        The travel times between every set of demand locations.
+    kazerne_set: list
+        The set of demand locations in which a station is positioned.
+
+    Returns
+    -------
+    matrices: list of np.arrays
+        The matrices for response neighborhoods of size 1, 2, ..., len(kazerne_set).
+    """
+    traveltimes_station = traveltimes[kazerne_set]
+    vaks = list(traveltimes.index.values)
+    N = len(kazerne_set)
+
+    disp_order = pd.DataFrame(columns=['vak', 'kazerne', 'order'])
+    service_areas = []
+    for index, row in traveltimes_station.iterrows():
+        disp_order = disp_order.append(pd.DataFrame(
+            {'vak': [index for x in range(N)],
+             'kazerne': list(row.sort_values().index.values),
+             'order': range(N)}
+            )
+        )
+        service_areas.append([index, list(row.sort_values().index.values)[0]])
+
+    # Construct RN's of different sizes
+    Incidence = []
+    for size in range(1, N + 1):
+        print('size: ', size)
+        A = build_rn(vaks, disp_order, kazerne_set, size)
+        Incidence.append(A)
+
+    if save:
+        pickle.dump(Incidence, open(save_path, 'wb'))
+
+    return Incidence
 
 
 def extract_vehicles_from_state(state):
