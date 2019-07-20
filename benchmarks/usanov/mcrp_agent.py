@@ -342,14 +342,14 @@ class MCRPAgent():
 
     def _get_relocations_from_fleet(self, fleet_dict):
         """Get the relocations suggested by the MCRP-LBAP solution for a given fleet."""
-        for s in range(1, 20):
+        for s in range(1, len(self.kazerne_set)):
             A = self.incidence[s - 1]
             opt_model, relocations, fleet_after = self._solve_mcrp(A, fleet_dict)
             if opt_model.status == 1:
-                break
+                movements = self._solve_lbap(relocations)
+                return movements
 
-        movements = self._solve_lbap(relocations)
-        return movements
+        return {}
 
     def _solve_mcrp(self, A, fleet_dict):
         """Solve the Maximum Coverage Relocation Problem."""
