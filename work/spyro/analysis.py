@@ -698,6 +698,63 @@ def merge_tables(*tables, to_quantiles=True, key="responses", num_quantiles=51, 
     return merged
 
 
+def calc_mean_quantiles(*tables):
+    """Calculate the means of multiple quantile estimates.
+
+    Assumes the quantiles have been estimated from samples
+    of the same size.
+
+    Parameters
+    ----------
+    *tables: dicts
+        The tables to merge. Must have states as keys and
+        numpy arrays of quantiles as values.
+
+    Returns
+    -------
+    quantile_table: dict
+        States as keys and numpy array of merged quantile estimates as values.
+    """
+    n = len(tables)
+    matrices = [np.array(list(table.values())) for table in tables]
+    mean = np.zeros_like(matrices[0])
+
+    for i in range(n):
+        mean += matrices[i] / n
+    keys = list(tables[0].keys())
+    result = {keys[i]: mean[i, :] for i in range(len(keys))}
+    return result
+
+
+def merge_tables_in_chunks(*paths):
+    """Load tables in chunks, calculate quantiles, and get the mean
+    of the quantiles estimates of different chunks.
+
+    For correct estimation of the quantiles, it is assumed that each
+    file has the same sample size.
+
+    Parameters
+    ----------
+    *paths: str
+        The paths to the tables that should be combined.
+
+    Returns
+    -------
+    mean_table: dict
+        The quantile estimates for each state.
+    """
+    assert len(paths) % 2 == 0, "Must be an even number of paths"
+    num_chunks = len(paths) / 2
+    path_chunks = [[paths[i], paths[i + 1]] for i in range(len(paths)) if i % 2 == 0]
+    qtables = []
+    for chunk_paths in path_chunks:
+        chunk_tables = load_tables(*chunk_paths)
+        qtables.append(merge_tables(*chunk_tables, to_quantiles=True, save_path=None))
+    
+    mean_table = calc_mean_quantiles(*qtables)
+    return mean_table
+
+
 def get_station_coords(path, station_col="kazerne"):
     """Obtain x, y coordinates for each station.
 
