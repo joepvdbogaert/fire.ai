@@ -1,5 +1,2 @@
-from spyro.value_estimation.estimators import (
-    TabularValueEstimator,
-    NeuralValueEstimator,
-    DataSetCreator
-)
+from spyro.value_estimation.estimators import *
+from spyro.value_estimation.core import *
