@@ -476,5 +476,6 @@ class NeuralValueEstimator(BaseParallelValueEstimator, BaseAgent):
             "warmup_steps": self.warmup_steps,
             "batch_size": self.batch_size,
             "log": self.log,
-            "logdir": self.logdir
+            "logdir": self.logdir,
+            "strategy": self.strategy
         }
