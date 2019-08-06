@@ -267,3 +267,113 @@ def evaluate_saved_quantile_estimator(model_dir, table_path=None, quantile_table
     # evaluate
     loss = model.evaluate_on_quantiles(quantile_table)
     return loss
+
+
+def evaluate_log_no_external(log, evaluator):
+    """Evaluate a test log disregarding the response times of external vehicles.
+
+    Parameters
+    ----------
+    log: pd.DataFrame
+        The test log / simulation log.
+    evaluator: fdsim.evaluation.Evaluator
+        The evaluator object used to extract performance metrics from the log.
+
+    Returns
+    -------
+    summary: dict
+        Summarized results by measure as a dictionary.
+    """
+    log.loc[log['station'] == 'EXTERNAL', 'response_time'] = np.nan
+    summary = evaluator.evaluate(log)
+    return summary
+
+
+def get_all_log_summaries(evaluator, dirpath="./results/test2"):
+    """Creates summaries of all logs in a directory.
+    Uses all files with 'log' in the name in the given directory.
+
+    Parameters
+    ----------
+    evaluator: fdsim.evaluation.Evaluator
+        The evaluator object used to extract performance metrics from the log.
+    dirpath: str
+        The path in which the simulation logs / test logs reside.
+
+    Returns
+    -------
+    summaries: dict
+        Dictionary of simulation summaries.
+    """    
+    summaries = {}
+    for f in os.listdir(dirpath):
+        if 'log' in f:
+            log = pd.read_csv(os.path.join('results', 'test2', f))
+            summaries[f] = evaluate_log_filtered(log)
+    return summaries
+
+
+def create_results_table(summaries=None, evaluator=None, dirpath=None):
+    """Creates summaries of all logs in a directory.
+    Uses all files with 'log' in the name in the given directory.
+
+    Parameters
+    ----------
+    summaries: dict, default=None
+        The summaries to create results tables from. If None, dirpath and evaluator
+        must be provided and the summaries will be made first.
+    evaluator: fdsim.evaluation.Evaluator
+        The evaluator object used to extract performance metrics from the log. Ignored
+        if summaries is not None.
+    dirpath: str, default=None
+        The path in which the simulation logs / test logs reside. Ignored
+        if summaries is not None.
+
+    Returns
+    -------
+    dfs: dict
+        Dictionary of results tables, one per measure in the evaluator / summaries.
+    """
+    if summaries is None:
+        assert dirpath is not None, "either summaries or dirpath must be provided"
+        summaries = get_all_log_summaries(evaluator, dirpath=dirpath)
+
+    measures = list(summaries[list(summaries.keys())[0]].keys())
+    dfs = {}
+    for measure in measures:
+        dfs[measure] = pd.concat([data[measure].assign(file=f)
+                                  for f, data in summaries.items()]).reset_index(drop=True)
+
+    return dfs
+
+
+def create_results_table_differences(dirpath, evaluator):
+    """Create results tables looking only at deployments for which the vehicle did
+    not come from the base station for at least one of the logs.
+
+    Parameters
+    ----------
+    dirpath: str
+        The path with all simulation/test logs to consider. All relevant files are
+        assumed to have 'log' in their name.
+    evaluator: fdsim.evaluation.Evaluator
+        Evaluator object used to evaluate the logs.
+
+    Returns
+    -------
+    results_table: dict
+        a pd.DataFrame for every measure in the Evalautor.
+    """
+    fs = [f for f in os.listdir(dirpath) if 'log' in f]
+    logs = [pd.read_csv(os.path.join(dirpath, f)) for f in fs]
+    logs = [log.loc[log['episode'].astype(int) < 49999, :] for log in logs]
+    from_home_by_log = [np.equal(log['station'].values, log['base_station_of_vehicle'].values)
+                        .reshape(-1, 1) for log in logs]
+    print([log.shape for log in logs])
+    from_home = np.concatenate(from_home_by_log, axis=1)
+    not_all_home = np.not_equal(from_home.sum(axis=1), from_home.shape[1])
+    print("{} of {} are not all from home station".format(not_all_home.sum(), len(not_all_home)))
+    short_logs = [log.loc[not_all_home, :] for log in logs]
+    summaries = {fs[i]: evaluate_log_filtered(log, evaluator=evaluator)
+                 for i, log in enumerate(short_logs)}
+    return create_results_table(evaluator, summaries=summaries)
