@@ -309,7 +309,7 @@ def get_all_log_summaries(evaluator, dirpath="./results/test2"):
     for f in os.listdir(dirpath):
         if 'log' in f:
             log = pd.read_csv(os.path.join('results', 'test2', f))
-            summaries[f] = evaluate_log_filtered(log)
+            summaries[f] = evaluate_log_no_external(log, evaluator)
     return summaries
 
 
