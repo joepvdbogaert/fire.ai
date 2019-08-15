@@ -392,7 +392,7 @@ def evaluate_all_saved_agents(dirpath, resultspath, evaluator, env_cls,
         if f + 'test_log.csv' not in os.listdir(resultspath):
             results, log, _ = evaluate_saved_agent(
                 os.path.join(dirpath, f),
-                FireCommanderV2TestEnv,
+                env_cls,
                 env_params=env_params,
                 policy=policy,
                 n_episodes=n_episodes
@@ -416,6 +416,9 @@ def evaluate_all_saved_agents(dirpath, resultspath, evaluator, env_cls,
             config = json.load(open(os.path.join(dirpath, f, 'agent_config.json'), 'rb'))
             for p in params_to_add:
                 for tab in table.values():
-                    tab.loc[f, p] = config[p]
+                    if ':' in p:
+                        tab.loc[f, p] = config[p.split(':')[0]][p.split(':')[1]]
+                    else:
+                        tab.loc[f, p] = config[p]
 
     return table
