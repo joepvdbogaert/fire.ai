@@ -1,6 +1,7 @@
 import os
 import json
 import pickle
+import gc
 import numpy as np
 import pandas as pd
 
@@ -377,3 +378,44 @@ def create_results_table_differences(dirpath, evaluator):
     summaries = {fs[i]: evaluate_log_filtered(log, evaluator=evaluator)
                  for i, log in enumerate(short_logs)}
     return create_results_table(evaluator, summaries=summaries)
+
+
+def evaluate_all_saved_agents(dirpath, resultspath, evaluator, env_cls,
+                              env_params=None, n_episodes=50000, policy=None,
+                              params_to_add=None):
+    """Evaluate all agents in a directory. All subdirectories in dirpath
+    are assumed to be agent folders containing weights and config. Test logs will
+    be stored in resultspath. Only agents in dirpath for which there is no log
+    yet in resultspath will be evaluated.
+    """
+    for f in os.listdir(dirpath):
+        if f + 'test_log.csv' not in os.listdir(resultspath):
+            results, log, _ = evaluate_saved_agent(
+                os.path.join(dirpath, f),
+                FireCommanderV2TestEnv,
+                env_params=env_params,
+                policy=policy,
+                n_episodes=n_episodes
+            )
+            log.to_csv(os.path.join(resultspath, f + "test_log.csv"))
+            del results, log
+            gc.collect()
+
+    summaries = get_all_log_summaries(evaluator, dirpath=resultspath)
+    table = create_results_table(summaries=summaries)
+
+    for tab in table.values():
+        tab.index = pd.Index([s[:-12] for s in tab['file'].values])
+
+    if params_to_add is not None:
+        for p in params_to_add:
+            for tab in table.values():
+                tab[p] = np.nan
+
+        for f in os.listdir(dirpath):
+            config = json.load(open(os.path.join(dirpath, f, 'agent_config.json'), 'rb'))
+            for p in params_to_add:
+                for tab in table.values():
+                    tab.loc[f, p] = config[p]
+
+    return table
